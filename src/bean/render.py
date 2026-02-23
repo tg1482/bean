@@ -48,6 +48,7 @@ def render_html(data: dict[str, Any], d3_js: str) -> str:
       <nav class="view-tabs" id="viewTabs">
         <button class="tab active" data-view="radial">Radial</button>
         <button class="tab" data-view="data">Data</button>
+        <button class="tab" data-view="diff" id="diffTab" style="display:none">Diff</button>
         <button class="tab" data-view="trace">Trace</button>
         <button class="tab" data-view="quality">Quality</button>
       </nav>
@@ -284,6 +285,61 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   color:var(--text2);cursor:pointer}
 .module-check-item input[type=checkbox]{accent-color:var(--accent);width:12px;height:12px}
 .module-check-item:hover{color:var(--text)}
+
+/* Diff view */
+.diff-summary-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 0}
+.diff-stat{display:flex;align-items:center;gap:4px;font-size:12px;font-weight:600}
+.diff-stat.added{color:#10b981}
+.diff-stat.removed{color:#ef4444}
+.diff-stat.changed{color:#fbbf24}
+.diff-stat.unchanged{color:var(--text3)}
+.diff-legend-item{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px}
+.diff-legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.diff-legend-count{margin-left:auto;color:var(--text3);font-size:11px}
+.diff-delta{font-size:11px;font-weight:600}
+.diff-delta.positive{color:#10b981}
+.diff-delta.negative{color:#ef4444}
+.diff-delta.zero{color:var(--text3)}
+.diff-fn-added{color:#10b981;font-size:11px;padding:1px 0}
+.diff-fn-removed{color:#ef4444;font-size:11px;padding:1px 0;text-decoration:line-through}
+.diff-badge{font-size:8px;font-weight:700;text-anchor:middle;pointer-events:none}
+.diff-banner{padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-bottom:6px;text-align:center}
+.diff-banner.new{background:rgba(16,185,129,0.15);color:#10b981;border:1px solid rgba(16,185,129,0.3)}
+.diff-banner.removed{background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3)}
+.diff-banner.modified{background:rgba(251,191,36,0.15);color:#fbbf24;border:1px solid rgba(251,191,36,0.3)}
+
+/* AST diff symbols */
+.ast-item{display:flex;align-items:center;gap:5px;padding:3px 0;font-size:11px;
+  border-bottom:1px solid rgba(148,163,184,0.06)}
+.ast-item .ast-icon{width:14px;height:14px;border-radius:3px;display:flex;align-items:center;
+  justify-content:center;font-size:8px;font-weight:700;flex-shrink:0;line-height:1}
+.ast-icon.added{background:rgba(16,185,129,0.2);color:#10b981}
+.ast-icon.removed{background:rgba(239,68,68,0.2);color:#ef4444}
+.ast-icon.changed{background:rgba(251,191,36,0.2);color:#fbbf24}
+.ast-icon.unchanged{background:rgba(148,163,184,0.1);color:var(--text3)}
+.ast-item .ast-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ast-item .ast-name.added{color:#10b981}
+.ast-item .ast-name.removed{color:#ef4444;text-decoration:line-through}
+.ast-item .ast-name.changed{color:#fbbf24}
+.ast-item .ast-name.unchanged{color:var(--text3)}
+.ast-item .ast-meta{color:var(--text3);font-size:9px;white-space:nowrap}
+.ast-item .ast-delta{font-size:9px;font-weight:600;white-space:nowrap}
+.ast-item .ast-delta.pos{color:#10b981}
+.ast-item .ast-delta.neg{color:#ef4444}
+.ast-detail{padding:2px 0 2px 19px;font-size:10px;color:var(--text3)}
+.ast-detail .added{color:#10b981}
+.ast-detail .removed{color:#ef4444;text-decoration:line-through}
+.ast-sub{padding-left:19px;font-size:10px;color:var(--text3);line-height:1.6}
+.ast-sub .pill-add{color:#10b981;background:rgba(16,185,129,0.1);border-radius:3px;padding:0 4px;
+  font-size:9px;margin-right:2px;display:inline-block}
+.ast-sub .pill-rm{color:#ef4444;background:rgba(239,68,68,0.1);border-radius:3px;padding:0 4px;
+  font-size:9px;margin-right:2px;display:inline-block;text-decoration:line-through}
+.import-row{display:flex;align-items:center;gap:5px;padding:2px 0;font-size:11px;
+  border-bottom:1px solid rgba(148,163,184,0.04)}
+.import-row .imp-target{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-row .imp-target.added{color:#10b981}
+.import-row .imp-target.removed{color:#ef4444;text-decoration:line-through}
+.import-row .imp-target.changed{color:#fbbf24}
 """
 
 
@@ -330,7 +386,12 @@ function init() {
   setupTabs();
   setupSearch();
   setupParticles();
-  switchView('radial');
+  if (D.isDiff) {
+    document.getElementById('diffTab').style.display = '';
+    switchView('diff');
+  } else {
+    switchView('radial');
+  }
   // Load-in reveal
   document.getElementById('app').style.opacity = '0';
   requestAnimationFrame(() => {
@@ -374,6 +435,7 @@ function switchView(view) {
   switch(view) {
     case 'radial': renderRadial(); break;
     case 'data': renderDataFlow(); break;
+    case 'diff': renderDiff(); break;
     case 'trace': renderTrace(); break;
     case 'quality': renderQuality(); break;
   }
@@ -1345,6 +1407,886 @@ function renderRadial() {
       }
       reLayout();
     });
+  });
+}
+
+/* ══════════════════════════════════════════════════════════
+   VIEW: Diff — Git change visualization on radial layout
+   ══════════════════════════════════════════════════════════ */
+function renderDiff() {
+  if (!D.isDiff) return;
+
+  const sidebar = document.getElementById('sidebar');
+  const filters = sidebar.querySelector('#filterControls');
+  const inspector = sidebar.querySelector('#inspector');
+  const tooltip = document.getElementById('tooltip');
+  const legend = sidebar.querySelector('#layerLegend');
+
+  const dm = D.diffMeta || {};
+  const dn = D.diffNodes || {};
+  const de = D.diffEdges || {};
+
+  const addedSet = new Set(dn.added || []);
+  const removedSet = new Set(dn.removed || []);
+  const changedMap = dn.changed || {};
+  const unchangedSet = new Set(dn.unchanged || []);
+
+  /* ── Combined node set: head nodes + ghost nodes for removed ── */
+  const headNodes = D.galaxyNodes || [];
+  const ghostNodes = (D.baseGalaxyNodes || []).map(n => Object.assign({}, n, {_ghost: true}));
+  const allNodes = [...headNodes, ...ghostNodes];
+
+  /* ── Combined edge set: head edges + removed edges ── */
+  const headEdges = D.galaxyEdges || [];
+  const ghostEdges = (D.baseGalaxyEdges || []).map(e => Object.assign({}, e, {_ghost: true}));
+  const allEdges = [...headEdges, ...ghostEdges];
+
+  const addedEdgeSet = new Set((de.added || []).map(e => e.source + '|' + e.target));
+  const removedEdgeSet = new Set((de.removed || []).map(e => e.source + '|' + e.target));
+
+  /* ── Diff status helpers ── */
+  function nodeDiffStatus(id) {
+    if (addedSet.has(id)) return 'added';
+    if (removedSet.has(id)) return 'removed';
+    if (changedMap[id]) return 'changed';
+    return 'unchanged';
+  }
+
+  function edgeDiffStatus(source, target) {
+    const key = source + '|' + target;
+    if (addedEdgeSet.has(key)) return 'added';
+    if (removedEdgeSet.has(key)) return 'removed';
+    return 'unchanged';
+  }
+
+  /* ── Discover layers from combined nodes ── */
+  const diffLayerSet = new Set();
+  allNodes.forEach(n => diffLayerSet.add(n.layer));
+  const diffLayers = [...diffLayerSet].sort();
+
+  /* ── Visibility state ── */
+  const hiddenCategories = new Set();
+  let showLabels = true;
+  let showEdges = true;
+  let showRings = true;
+
+  /* ── Legend ── */
+  const counts = {added: addedSet.size, removed: removedSet.size, changed: Object.keys(changedMap).length, unchanged: unchangedSet.size};
+  legend.innerHTML = `
+    <h3>Diff Legend</h3>
+    <div class="diff-legend-item"><div class="diff-legend-dot" style="background:#10b981"></div><span>Added</span><span class="diff-legend-count">${counts.added}</span></div>
+    <div class="diff-legend-item"><div class="diff-legend-dot" style="background:#ef4444"></div><span>Removed</span><span class="diff-legend-count">${counts.removed}</span></div>
+    <div class="diff-legend-item"><div class="diff-legend-dot" style="background:#fbbf24"></div><span>Changed</span><span class="diff-legend-count">${counts.changed}</span></div>
+    <div class="diff-legend-item"><div class="diff-legend-dot" style="background:#475569"></div><span>Unchanged</span><span class="diff-legend-count">${counts.unchanged}</span></div>
+  `;
+
+  /* ── Sidebar filters ── */
+  filters.innerHTML = `
+    <h3>Filter</h3>
+    <div class="filter-toggle"><input type="checkbox" id="diffShowAdded" checked/><label for="diffShowAdded" style="color:#10b981">Added (${counts.added})</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="diffShowRemoved" checked/><label for="diffShowRemoved" style="color:#ef4444">Removed (${counts.removed})</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="diffShowChanged" checked/><label for="diffShowChanged" style="color:#fbbf24">Changed (${counts.changed})</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="diffShowUnchanged" checked/><label for="diffShowUnchanged">Unchanged (${counts.unchanged})</label></div>
+    <h3 style="margin-top:8px">Display</h3>
+    <div class="filter-toggle"><input type="checkbox" id="diffLabels" checked/><label for="diffLabels">Labels</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="diffEdgesToggle" checked/><label for="diffEdgesToggle">Dependencies</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="diffRings" checked/><label for="diffRings">Depth rings</label></div>
+  `;
+
+  /* ── Default summary inspector ── */
+  function showDiffSummary() {
+    const ld = dm.totalLineDelta || 0;
+    const cd = dm.totalComplexityDelta || 0;
+    const ldCls = ld > 0 ? 'positive' : ld < 0 ? 'negative' : 'zero';
+    const cdCls = cd > 0 ? 'positive' : cd < 0 ? 'negative' : 'zero';
+    inspector.innerHTML = `
+      <h3>Diff Summary</h3>
+      <div class="inspector-row"><span class="label">Base ref</span><span class="value">${dm.baseRef || '?'}</span></div>
+      <div class="inspector-row"><span class="label">Base commit</span><span class="value" style="font-size:10px">${dm.baseCommit || '?'}</span></div>
+      <div class="inspector-row"><span class="label">Head commit</span><span class="value" style="font-size:10px">${dm.headCommit || '?'}</span></div>
+      <div class="inspector-row"><span class="label">Files changed</span><span class="value">${dm.filesChanged || 0}</span></div>
+      <div class="inspector-row"><span class="label">Modules +/-/~</span><span class="value"><span style="color:#10b981">+${dm.modulesAdded||0}</span> <span style="color:#ef4444">-${dm.modulesRemoved||0}</span> <span style="color:#fbbf24">~${dm.modulesChanged||0}</span></span></div>
+      <div class="inspector-row"><span class="label">Edges +/-</span><span class="value"><span style="color:#10b981">+${dm.edgesAdded||0}</span> <span style="color:#ef4444">-${dm.edgesRemoved||0}</span></span></div>
+      <div class="inspector-row"><span class="label">Line delta</span><span class="diff-delta ${ldCls}">${ld>0?'+':''}${ld}</span></div>
+      <div class="inspector-row"><span class="label">Complexity delta</span><span class="diff-delta ${cdCls}">${cd>0?'+':''}${cd}</span></div>
+      <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click modules or edges to inspect changes.</div>
+    `;
+  }
+  showDiffSummary();
+
+  /* ── SVG setup ── */
+  const svg = d3.select('#mainSvg');
+  const width = svg.node().clientWidth;
+  const height = svg.node().clientHeight;
+  const g = svg.append('g').attr('class','diff-root');
+  const zoomBehavior = d3.zoom().scaleExtent([0.1, 5]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoomBehavior);
+  const cx = width / 2;
+  const cy = height / 2;
+
+  /* ── Build node lookup ── */
+  const nodeById = new Map();
+  allNodes.forEach(n => nodeById.set(n.id, n));
+  const nodeIdSet = new Set(allNodes.map(n => n.id));
+
+  /* ── Build edge lookup ── */
+  const edgeByKey = new Map();
+  allEdges.forEach(e => edgeByKey.set(e.source + '|' + e.target, e));
+
+  /* ── Import graph for depth ── */
+  const importsOf = new Map();
+  allEdges.forEach(e => {
+    if (!importsOf.has(e.source)) importsOf.set(e.source, new Set());
+    importsOf.get(e.source).add(e.target);
+  });
+
+  /* ── Compute depth ── */
+  const depthOf = new Map();
+  const inProgress = new Set();
+  function calcDepth(id) {
+    if (depthOf.has(id)) return depthOf.get(id);
+    if (inProgress.has(id)) return 0;
+    inProgress.add(id);
+    const deps = importsOf.get(id) || new Set();
+    let maxDep = -1;
+    for (const dep of deps) {
+      if (nodeIdSet.has(dep)) maxDep = Math.max(maxDep, calcDepth(dep));
+    }
+    const d = maxDep + 1;
+    depthOf.set(id, d);
+    inProgress.delete(id);
+    return d;
+  }
+  allNodes.forEach(n => calcDepth(n.id));
+  const naturalMax = Math.max(0, ...depthOf.values());
+  allNodes.forEach(n => { if (n.isEntryPoint) depthOf.set(n.id, naturalMax + 1); });
+  const maxDepth = Math.max(0, ...depthOf.values());
+  const displayMax = Math.min(maxDepth, 12);
+
+  /* ── Node size ── */
+  function nodeSize(n) {
+    const v = n.symbolCount || 1;
+    return clamp(2.5 + Math.sqrt(v) * 1.8, 3, 14);
+  }
+
+  /* ── Visibility check ── */
+  function isNodeVisible(n) {
+    const status = nodeDiffStatus(n.id);
+    if (hiddenCategories.has(status)) return false;
+    return true;
+  }
+
+  function getVisibleNodes() { return allNodes.filter(isNodeVisible); }
+
+  /* ── Position computation (reuses radial logic) ── */
+  function computePositions(visibleNodes) {
+    const layerBuckets = {};
+    diffLayers.forEach(l => { layerBuckets[l] = []; });
+    visibleNodes.forEach(n => {
+      const l = n.layer || 'other';
+      if (!layerBuckets[l]) layerBuckets[l] = [];
+      layerBuckets[l].push(n);
+    });
+    const actLayers = diffLayers.filter(l => (layerBuckets[l]||[]).length > 0);
+
+    const sectorGap = actLayers.length > 1 ? 0.06 : 0;
+    const totalGap = sectorGap * actLayers.length;
+    const availAngle = 2 * Math.PI - totalGap;
+    const totalN = visibleNodes.length || 1;
+
+    const secs = {};
+    let curA = -Math.PI / 2;
+    actLayers.forEach(l => {
+      const cnt = layerBuckets[l].length;
+      const sweep = (cnt / totalN) * availAngle;
+      secs[l] = { start: curA, end: curA + sweep };
+      curA += sweep + sectorGap;
+    });
+
+    const minR = Math.max(40, Math.min(cx, cy) * 0.1);
+    const maxR = Math.min(cx, cy) - 60;
+    const ringStep = displayMax > 0 ? (maxR - minR) / displayMax : 0;
+    const pos = new Map();
+
+    actLayers.forEach(layer => {
+      const sec = secs[layer];
+      const mods = layerBuckets[layer];
+      const byDepth = {};
+      mods.forEach(n => {
+        const d = Math.min(depthOf.get(n.id)||0, displayMax);
+        (byDepth[d] = byDepth[d] || []).push(n);
+      });
+      Object.entries(byDepth).forEach(([dStr, arr]) => {
+        const d = parseInt(dStr);
+        const r = minR + d * ringStep;
+        arr.sort((a, b) => a.label.localeCompare(b.label));
+        const sweep = sec.end - sec.start;
+        arr.forEach((n, i) => {
+          const t = arr.length > 1 ? (i + 0.5) / arr.length : 0.5;
+          const a = sec.start + t * sweep;
+          pos.set(n.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), angle: a, r, depth: d });
+        });
+      });
+    });
+
+    return { positions: pos, sectors: secs, activeLayers: actLayers, minR, maxR, ringStep };
+  }
+
+  let layout = computePositions(getVisibleNodes());
+  let positions = layout.positions;
+
+  /* ── Drawing layers ── */
+  const ringsG = g.append('g').attr('class','diff-rings');
+  const sectorG = g.append('g').attr('class','diff-sectors');
+  const edgeG = g.append('g').attr('class','diff-edges');
+  const edgeHitG = g.append('g').attr('class','diff-edge-hits');
+  const nodeG = g.append('g').attr('class','diff-nodes');
+  const labelG = g.append('g').attr('class','diff-labels');
+  const badgeG = g.append('g').attr('class','diff-badges');
+
+  /* ── Draw rings ── */
+  function drawRings(lMinR, lMaxR, lRingStep) {
+    ringsG.selectAll('*').remove();
+    for (let d = 0; d <= displayMax; d++) {
+      const r = lMinR + d * lRingStep;
+      ringsG.append('circle')
+        .attr('cx', cx).attr('cy', cy).attr('r', r)
+        .attr('fill','none')
+        .attr('stroke','var(--border)')
+        .attr('stroke-width', d === 0 || d === displayMax ? 0.7 : 0.3)
+        .attr('stroke-dasharray','4 8')
+        .attr('opacity', 0.6);
+    }
+    ringsG.append('text')
+      .attr('x', cx).attr('y', cy + 4)
+      .attr('text-anchor','middle')
+      .attr('font-size', 10).attr('font-weight',700)
+      .attr('fill','var(--text3)')
+      .attr('letter-spacing','0.1em')
+      .attr('opacity', 0.5)
+      .text('CORE');
+  }
+
+  /* ── Draw sectors ── */
+  function drawSectors(actLayers, secs, lMinR, lMaxR) {
+    sectorG.selectAll('*').remove();
+    actLayers.forEach(layer => {
+      const sec = secs[layer];
+      const mid = (sec.start + sec.end) / 2;
+      const arc = d3.arc()
+        .innerRadius(lMinR - 8)
+        .outerRadius(lMaxR + 8)
+        .startAngle(sec.start + Math.PI / 2)
+        .endAngle(sec.end + Math.PI / 2);
+      sectorG.append('path')
+        .attr('d', arc())
+        .attr('transform', `translate(${cx},${cy})`)
+        .attr('fill', layerColor(layer))
+        .attr('fill-opacity', 0.025)
+        .attr('stroke','none');
+      if (actLayers.length > 1) {
+        sectorG.append('line')
+          .attr('x1', cx + (lMinR - 12) * Math.cos(sec.start))
+          .attr('y1', cy + (lMinR - 12) * Math.sin(sec.start))
+          .attr('x2', cx + (lMaxR + 12) * Math.cos(sec.start))
+          .attr('y2', cy + (lMaxR + 12) * Math.sin(sec.start))
+          .attr('stroke', layerColor(layer))
+          .attr('stroke-width', 0.4)
+          .attr('stroke-opacity', 0.25);
+      }
+      const lR = lMaxR + 32;
+      sectorG.append('text')
+        .attr('x', cx + lR * Math.cos(mid)).attr('y', cy + lR * Math.sin(mid) + 3)
+        .attr('text-anchor','middle')
+        .attr('dominant-baseline','middle')
+        .attr('font-size', 11).attr('font-weight',600)
+        .attr('fill', layerColor(layer))
+        .attr('opacity', 0.8)
+        .text(LAYER_LABELS[layer] || layer);
+    });
+  }
+
+  /* ── Edge path helper ── */
+  function edgePath(sp, tp) {
+    const bundle = 0.55;
+    const mx = (sp.x + tp.x) / 2;
+    const my = (sp.y + tp.y) / 2;
+    const qx = mx + (cx - mx) * bundle;
+    const qy = my + (cy - my) * bundle;
+    return `M${sp.x},${sp.y} Q${qx},${qy} ${tp.x},${tp.y}`;
+  }
+
+  /* ── Draw edges ── */
+  function drawEdges(pos) {
+    edgeG.selectAll('*').remove();
+    edgeHitG.selectAll('*').remove();
+    allEdges.forEach(e => {
+      const sp = pos.get(e.source);
+      const tp = pos.get(e.target);
+      if (!sp || !tp) return;
+      const d = edgePath(sp, tp);
+      const status = edgeDiffStatus(e.source, e.target);
+
+      let color, w, dasharray, opacity;
+      switch(status) {
+        case 'added': color = '#10b981'; w = 1.5; dasharray = 'none'; opacity = 0.7; break;
+        case 'removed': color = '#ef4444'; w = 1.2; dasharray = '6 4'; opacity = 0.5; break;
+        default: color = 'rgba(148,163,184,0.15)'; w = 0.4; dasharray = 'none'; opacity = 0.3; break;
+      }
+
+      edgeG.append('path')
+        .attr('d', d).attr('fill','none')
+        .attr('stroke', color).attr('stroke-width', w)
+        .attr('stroke-dasharray', dasharray)
+        .attr('opacity', opacity)
+        .attr('data-source', e.source).attr('data-target', e.target)
+        .attr('data-status', status);
+
+      edgeHitG.append('path')
+        .attr('d', d).attr('fill','none')
+        .attr('stroke','transparent').attr('stroke-width', 12)
+        .attr('data-source', e.source).attr('data-target', e.target)
+        .style('cursor','pointer');
+    });
+  }
+
+  /* ── Draw nodes ── */
+  function drawNodes(pos) {
+    nodeG.selectAll('*').remove();
+    badgeG.selectAll('*').remove();
+    allNodes.forEach(n => {
+      const p = pos.get(n.id);
+      if (!p) return;
+      const sz = nodeSize(n);
+      const status = nodeDiffStatus(n.id);
+
+      let fill, stroke, strokeWidth, strokeDash, opacity;
+      switch(status) {
+        case 'added':
+          fill = `url(#grad-${n.layer})`; stroke = '#10b981'; strokeWidth = 2; strokeDash = 'none'; opacity = 1;
+          break;
+        case 'removed':
+          fill = 'var(--bg3)'; stroke = '#ef4444'; strokeWidth = 2; strokeDash = '4 3'; opacity = 0.5;
+          break;
+        case 'changed':
+          fill = `url(#grad-${n.layer})`; stroke = '#fbbf24'; strokeWidth = 1.5; strokeDash = 'none'; opacity = 1;
+          break;
+        default:
+          fill = `url(#grad-${n.layer})`; stroke = layerColor(n.layer); strokeWidth = 0.3; strokeDash = 'none'; opacity = 0.3;
+          break;
+      }
+
+      const ng = nodeG.append('g')
+        .attr('transform', `translate(${p.x},${p.y})`)
+        .attr('class','diff-node')
+        .attr('data-id', n.id)
+        .attr('data-status', status)
+        .attr('data-depth', p.depth)
+        .style('cursor','pointer')
+        .attr('opacity', opacity);
+
+      if (status !== 'unchanged') {
+        ng.append('circle').attr('class','node-glow').attr('r', sz + 3)
+          .attr('fill', stroke).attr('fill-opacity', 0.12);
+      }
+      ng.append('circle').attr('class','node-main').attr('r', sz)
+        .attr('fill', fill)
+        .attr('stroke', stroke)
+        .attr('stroke-width', strokeWidth)
+        .attr('stroke-dasharray', strokeDash);
+
+      /* ── Badge above node ── */
+      if (status === 'added') {
+        badgeG.append('text').attr('x', p.x).attr('y', p.y - sz - 5)
+          .attr('class','diff-badge').attr('fill','#10b981').text('+');
+      } else if (status === 'removed') {
+        badgeG.append('text').attr('x', p.x).attr('y', p.y - sz - 5)
+          .attr('class','diff-badge').attr('fill','#ef4444').text('\u00d7');
+      } else if (status === 'changed') {
+        const cd = changedMap[n.id]?.complexityDelta || 0;
+        if (cd !== 0) {
+          badgeG.append('text').attr('x', p.x).attr('y', p.y - sz - 5)
+            .attr('class','diff-badge').attr('fill','#fbbf24')
+            .text((cd > 0 ? '+' : '') + cd + 'C');
+        }
+      }
+    });
+  }
+
+  /* ── Draw labels ── */
+  function drawLabels(pos) {
+    labelG.selectAll('*').remove();
+    allNodes.forEach(n => {
+      const p = pos.get(n.id);
+      if (!p) return;
+      const sz = nodeSize(n);
+      const status = nodeDiffStatus(n.id);
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const nx = dx / dist;
+      const off = sz + 5;
+      const lx = p.x + nx * off;
+      const ly = p.y + (dy / dist) * off;
+      let anchor = 'start';
+      if (nx < -0.3) anchor = 'end';
+      else if (Math.abs(nx) <= 0.3) anchor = 'middle';
+
+      let fillColor = 'var(--text3)';
+      if (status === 'added') fillColor = '#10b981';
+      else if (status === 'removed') fillColor = '#ef4444';
+      else if (status === 'changed') fillColor = '#fbbf24';
+
+      labelG.append('text')
+        .attr('x', lx).attr('y', ly + 3)
+        .attr('text-anchor', anchor)
+        .attr('font-size', 9)
+        .attr('fill', fillColor)
+        .attr('paint-order','stroke')
+        .attr('stroke','var(--bg)')
+        .attr('stroke-width', 2)
+        .attr('stroke-linejoin','round')
+        .attr('pointer-events','none')
+        .attr('data-id', n.id)
+        .attr('data-depth', p.depth)
+        .attr('opacity', status === 'unchanged' ? 0.3 : 1)
+        .text(shortLabel(n.label));
+    });
+  }
+
+  /* ── Module inspector ── */
+  /* ── Delta string helper ── */
+  function deltaStr(v) {
+    if (v > 0) return `<span class="ast-delta pos">+${v}</span>`;
+    if (v < 0) return `<span class="ast-delta neg">${v}</span>`;
+    return '';
+  }
+  function statusIcon(s) {
+    const icons = {added:'+', removed:'\u00d7', changed:'~', unchanged:'\u00b7'};
+    return `<span class="ast-icon ${s}">${icons[s]||'?'}</span>`;
+  }
+
+  function showDiffModuleInspector(id) {
+    const n = nodeById.get(id);
+    if (!n) return;
+    const status = nodeDiffStatus(id);
+    const moduleId = id.replace(/^module:/, '');
+
+    let html = '<h3>Module</h3>';
+    html += `<div class="inspector-title" style="color:${layerColor(n.layer)}">${n.label}</div>`;
+
+    if (status === 'added') {
+      html += '<div class="diff-banner new">NEW MODULE</div>';
+    } else if (status === 'removed') {
+      html += '<div class="diff-banner removed">REMOVED</div>';
+    } else if (status === 'changed') {
+      html += '<div class="diff-banner modified">MODIFIED</div>';
+    }
+
+    html += '<div class="inspector-scrollable">';
+
+    /* ── Module-level stats ── */
+    html += `<div class="inspector-row"><span class="label">Layer</span><span class="value">${LAYER_LABELS[n.layer]||n.layer}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Lines</span><span class="value">${n.lineCount||'?'}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Complexity</span><span class="value">${n.complexity||0}</span></div>`;
+
+    if (status === 'changed') {
+      const cd = changedMap[id];
+      if (cd) {
+        const ldCls = cd.lineDelta > 0 ? 'positive' : cd.lineDelta < 0 ? 'negative' : 'zero';
+        const cdCls = cd.complexityDelta > 0 ? 'positive' : cd.complexityDelta < 0 ? 'negative' : 'zero';
+        html += `<div class="inspector-row"><span class="label">\u0394 Lines</span><span class="diff-delta ${ldCls}">${cd.lineDelta>0?'+':''}${cd.lineDelta}</span></div>`;
+        html += `<div class="inspector-row"><span class="label">\u0394 Complexity</span><span class="diff-delta ${cdCls}">${cd.complexityDelta>0?'+':''}${cd.complexityDelta}</span></div>`;
+
+        /* ── Function AST breakdown ── */
+        const fnDiffs = cd.functionDiffs || [];
+        if (fnDiffs.length) {
+          const fnCounts = {added:0, removed:0, changed:0, unchanged:0};
+          fnDiffs.forEach(f => fnCounts[f.status]++);
+          const summary = [];
+          if (fnCounts.added) summary.push(`<span style="color:#10b981">+${fnCounts.added}</span>`);
+          if (fnCounts.removed) summary.push(`<span style="color:#ef4444">-${fnCounts.removed}</span>`);
+          if (fnCounts.changed) summary.push(`<span style="color:#fbbf24">~${fnCounts.changed}</span>`);
+          if (fnCounts.unchanged) summary.push(`<span style="color:var(--text3)">${fnCounts.unchanged} same</span>`);
+          html += `<div class="inspector-section"><div class="inspector-section-title">Functions (${fnDiffs.length}) ${summary.join(' ')}</div>`;
+
+          fnDiffs.forEach(f => {
+            html += `<div class="ast-item">${statusIcon(f.status)}<span class="ast-name ${f.status}" title="${f.name}">${f.isAsync?'async ':''}${f.name}</span>`;
+            html += `<span class="ast-meta">C${f.complexity}</span>`;
+            if (f.status === 'changed') {
+              const parts = [];
+              if (f.complexityDelta) parts.push(deltaStr(f.complexityDelta));
+              if (f.lineDelta) parts.push(deltaStr(f.lineDelta)+'L');
+              if (f.paramDelta) parts.push(deltaStr(f.paramDelta)+'p');
+              html += parts.join(' ');
+            } else if (f.status !== 'unchanged') {
+              html += `<span class="ast-meta">${f.lines}L ${f.params}p</span>`;
+            }
+            html += '</div>';
+
+            /* Sub-details for changed functions */
+            if (f.status === 'changed') {
+              const details = [];
+              if (f.asyncChanged) details.push(f.isAsync ? 'became async' : 'no longer async');
+              if (f.returnTypeChanged) details.push('return: ' + (f.returnType || 'None'));
+              if (f.decoratorsAdded.length) details.push('+ @' + f.decoratorsAdded.join(', @'));
+              if (f.decoratorsRemoved.length) details.push('- @' + f.decoratorsRemoved.join(', @'));
+              if (details.length) {
+                html += `<div class="ast-detail">${details.join(' \u00b7 ')}</div>`;
+              }
+            }
+          });
+          html += '</div>';
+        }
+
+        /* ── Class AST breakdown ── */
+        const clsDiffs = cd.classDiffs || [];
+        if (clsDiffs.length) {
+          const clsCounts = {added:0, removed:0, changed:0, unchanged:0};
+          clsDiffs.forEach(c => clsCounts[c.status]++);
+          const summary = [];
+          if (clsCounts.added) summary.push(`<span style="color:#10b981">+${clsCounts.added}</span>`);
+          if (clsCounts.removed) summary.push(`<span style="color:#ef4444">-${clsCounts.removed}</span>`);
+          if (clsCounts.changed) summary.push(`<span style="color:#fbbf24">~${clsCounts.changed}</span>`);
+          if (clsCounts.unchanged) summary.push(`<span style="color:var(--text3)">${clsCounts.unchanged} same</span>`);
+          html += `<div class="inspector-section"><div class="inspector-section-title">Classes (${clsDiffs.length}) ${summary.join(' ')}</div>`;
+
+          clsDiffs.forEach(c => {
+            html += `<div class="ast-item">${statusIcon(c.status)}<span class="ast-name ${c.status}">${c.name}</span>`;
+            html += `<span class="ast-meta">${c.methods}m ${c.fields}f</span>`;
+            if (c.status === 'changed') {
+              const parts = [];
+              if (c.methodDelta) parts.push(deltaStr(c.methodDelta)+'m');
+              if (c.fieldDelta) parts.push(deltaStr(c.fieldDelta)+'f');
+              html += parts.join(' ');
+            }
+            html += '</div>';
+
+            if (c.status === 'changed') {
+              let sub = '';
+              if (c.methodsAdded.length) sub += c.methodsAdded.map(m => `<span class="pill-add">+${m}</span>`).join('');
+              if (c.methodsRemoved.length) sub += c.methodsRemoved.map(m => `<span class="pill-rm">${m}</span>`).join('');
+              if (c.basesAdded.length) sub += ' bases: ' + c.basesAdded.map(b => `<span class="pill-add">+${b}</span>`).join('');
+              if (c.basesRemoved.length) sub += c.basesRemoved.map(b => `<span class="pill-rm">${b}</span>`).join('');
+              if (sub) html += `<div class="ast-sub">${sub}</div>`;
+            }
+          });
+          html += '</div>';
+        }
+
+        /* ── Import diffs ── */
+        const impDiffs = cd.importDiffs || [];
+        if (impDiffs.length) {
+          html += `<div class="inspector-section"><div class="inspector-section-title">Import Changes (${impDiffs.length})</div>`;
+          impDiffs.forEach(imp => {
+            html += `<div class="import-row">${statusIcon(imp.status)}<span class="imp-target ${imp.status}">${imp.target}</span></div>`;
+            let sub = '';
+            if (imp.namesAdded.length) sub += imp.namesAdded.map(n => `<span class="pill-add">+${n}</span>`).join('');
+            if (imp.namesRemoved.length) sub += imp.namesRemoved.map(n => `<span class="pill-rm">${n}</span>`).join('');
+            if (sub) html += `<div class="ast-sub">${sub}</div>`;
+          });
+          html += '</div>';
+        }
+      }
+    } else if (status === 'added') {
+      /* ── New module: show all functions/classes as new ── */
+      const symbolNodes = (D.drillLevels && D.drillLevels.symbol && D.drillLevels.symbol.nodes) || [];
+      const fns = symbolNodes.filter(s => s.parent === id && s.kind === 'function');
+      const cls = symbolNodes.filter(s => s.parent === id && s.kind === 'class');
+      if (fns.length) {
+        html += `<div class="inspector-section"><div class="inspector-section-title">Functions (${fns.length})</div>`;
+        fns.forEach(f => {
+          const name = f.label.includes('.') ? f.label.split('.').pop() : f.label;
+          html += `<div class="ast-item">${statusIcon('added')}<span class="ast-name added">${name}</span><span class="ast-meta">C${f.complexity||0} ${f.span||0}L</span></div>`;
+        });
+        html += '</div>';
+      }
+      if (cls.length) {
+        html += `<div class="inspector-section"><div class="inspector-section-title">Classes (${cls.length})</div>`;
+        cls.forEach(c => {
+          html += `<div class="ast-item">${statusIcon('added')}<span class="ast-name added">${c.label}</span><span class="ast-meta">${c.span||0}L</span></div>`;
+        });
+        html += '</div>';
+      }
+    } else if (status === 'unchanged') {
+      html += '<div style="margin-top:6px;font-size:11px;color:var(--text3)">(unchanged)</div>';
+    }
+
+    /* ── Dependency edges ── */
+    const outDeps = allEdges.filter(e => e.source === id && positions.has(e.target));
+    const inDeps = allEdges.filter(e => e.target === id && positions.has(e.source));
+    if (outDeps.length) {
+      html += '<div class="inspector-section"><div class="inspector-section-title">Depends on (' + outDeps.length + ')</div>';
+      outDeps.forEach(ed => {
+        const t = nodeById.get(ed.target);
+        const eStatus = edgeDiffStatus(ed.source, ed.target);
+        const statusTag = eStatus === 'added' ? ' <span style="color:#10b981;font-size:9px">NEW</span>' : eStatus === 'removed' ? ' <span style="color:#ef4444;font-size:9px">REMOVED</span>' : '';
+        html += `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(t?.layer||'other')}">${t?shortLabel(t.label):ed.target}${statusTag}</span></div>`;
+      });
+      html += '</div>';
+    }
+    if (inDeps.length) {
+      html += '<div class="inspector-section"><div class="inspector-section-title">Imported by (' + inDeps.length + ')</div>';
+      inDeps.forEach(ed => {
+        const s = nodeById.get(ed.source);
+        const eStatus = edgeDiffStatus(ed.source, ed.target);
+        const statusTag = eStatus === 'added' ? ' <span style="color:#10b981;font-size:9px">NEW</span>' : eStatus === 'removed' ? ' <span style="color:#ef4444;font-size:9px">REMOVED</span>' : '';
+        html += `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(s?.layer||'other')}">${s?shortLabel(s.label):ed.source}${statusTag}</span></div>`;
+      });
+      html += '</div>';
+    }
+
+    html += '</div>';
+    inspector.innerHTML = html;
+  }
+
+  /* ── Edge inspector ── */
+  function showDiffEdgeInspector(sourceId, targetId) {
+    const sn = nodeById.get(sourceId);
+    const tn = nodeById.get(targetId);
+    const ed = edgeByKey.get(sourceId + '|' + targetId);
+    if (!sn || !tn) return;
+    const status = edgeDiffStatus(sourceId, targetId);
+
+    let html = '<h3>Dependency</h3>';
+    html += '<div class="inspector-scrollable">';
+    html += `<div class="inspector-row"><span class="label">From</span><span class="value" style="color:${layerColor(sn.layer)}">${shortLabel(sn.label)}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">To</span><span class="value" style="color:${layerColor(tn.layer)}">${shortLabel(tn.label)}</span></div>`;
+    if (status === 'added') {
+      html += '<div class="diff-banner new">NEW DEPENDENCY</div>';
+    } else if (status === 'removed') {
+      html += '<div class="diff-banner removed">REMOVED DEPENDENCY</div>';
+    }
+    if (ed) {
+      const names = ed.names || [];
+      if (names.length) {
+        html += '<div class="inspector-section"><div class="inspector-section-title">Imported Symbols</div>';
+        html += `<div class="symbol-pills">${names.map(nm => `<span class="symbol-pill">${nm}</span>`).join('')}</div>`;
+        html += '</div>';
+      }
+    }
+    // Also check diffEdges for symbol names
+    const deAdded = (de.added || []).find(e => e.source === sourceId && e.target === targetId);
+    const deRemoved = (de.removed || []).find(e => e.source === sourceId && e.target === targetId);
+    if (deAdded && deAdded.names && deAdded.names.length) {
+      html += '<div class="inspector-section"><div class="inspector-section-title">Added Symbols</div>';
+      html += `<div class="symbol-pills">${deAdded.names.map(nm => `<span class="symbol-pill" style="border-color:#10b981;color:#10b981">${nm}</span>`).join('')}</div>`;
+      html += '</div>';
+    }
+    if (deRemoved && deRemoved.names && deRemoved.names.length) {
+      html += '<div class="inspector-section"><div class="inspector-section-title">Removed Symbols</div>';
+      html += `<div class="symbol-pills">${deRemoved.names.map(nm => `<span class="symbol-pill" style="border-color:#ef4444;color:#ef4444">${nm}</span>`).join('')}</div>`;
+      html += '</div>';
+    }
+    html += '</div>';
+    inspector.innerHTML = html;
+  }
+
+  /* ── Node interactions ── */
+  function attachNodeInteractions() {
+    nodeG.selectAll('.diff-node')
+      .on('mouseenter', function(e) {
+        const id = d3.select(this).attr('data-id');
+        const n = nodeById.get(id);
+        if (!n) return;
+        const status = nodeDiffStatus(id);
+        const connected = new Set([id]);
+        allEdges.forEach(ed => {
+          if (ed.source === id) connected.add(ed.target);
+          if (ed.target === id) connected.add(ed.source);
+        });
+
+        nodeG.selectAll('.diff-node')
+          .transition().duration(120)
+          .attr('opacity', function() {
+            const nid = d3.select(this).attr('data-id');
+            if (connected.has(nid)) return 1;
+            return 0.06;
+          });
+        labelG.selectAll('text')
+          .transition().duration(120)
+          .attr('opacity', function() {
+            return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.05;
+          });
+        edgeG.selectAll('path')
+          .transition().duration(120)
+          .attr('opacity', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === id || t === id) ? 0.9 : 0.03;
+          })
+          .attr('stroke-width', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === id || t === id) ? 2.5 : 0.4;
+          });
+
+        let tooltipExtra = '';
+        if (status === 'added') tooltipExtra = '<div class="tt-row" style="color:#10b981">New module</div>';
+        else if (status === 'removed') tooltipExtra = '<div class="tt-row" style="color:#ef4444">Removed module</div>';
+        else if (status === 'changed') {
+          const cd = changedMap[id];
+          if (cd) {
+            const parts = [];
+            if (cd.functionsAdded.length) parts.push('+' + cd.functionsAdded.length + ' fn');
+            if (cd.functionsRemoved.length) parts.push('-' + cd.functionsRemoved.length + ' fn');
+            if (cd.classesAdded.length) parts.push('+' + cd.classesAdded.length + ' cls');
+            if (cd.classesRemoved.length) parts.push('-' + cd.classesRemoved.length + ' cls');
+            if (cd.complexityDelta) parts.push((cd.complexityDelta > 0 ? '+' : '') + cd.complexityDelta + 'C');
+            tooltipExtra = `<div class="tt-row" style="color:#fbbf24">${parts.join(', ') || 'Modified'}</div>`;
+          }
+        }
+
+        tooltip.classList.remove('hidden');
+        tooltip.innerHTML = `
+          <div class="tt-title" style="color:${layerColor(n.layer)}">${n.label}</div>
+          <div class="tt-row">${n.nFunctions||0} fn \u00b7 ${n.nClasses||0} cls \u00b7 ${n.lineCount||'?'} lines</div>
+          ${tooltipExtra}
+        `;
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mousemove', e => {
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mouseleave', function() {
+        tooltip.classList.add('hidden');
+        nodeG.selectAll('.diff-node').each(function() {
+          const nid = d3.select(this).attr('data-id');
+          const st = nodeDiffStatus(nid);
+          d3.select(this).transition().duration(200).attr('opacity', st === 'unchanged' ? 0.3 : 1);
+        });
+        labelG.selectAll('text').each(function() {
+          const nid = d3.select(this).attr('data-id');
+          const st = nodeDiffStatus(nid);
+          d3.select(this).transition().duration(200).attr('opacity', st === 'unchanged' ? 0.3 : 1);
+        });
+        edgeG.selectAll('path').each(function() {
+          const st = d3.select(this).attr('data-status');
+          const op = st === 'added' ? 0.7 : st === 'removed' ? 0.5 : 0.3;
+          d3.select(this).transition().duration(200).attr('opacity', op)
+            .attr('stroke-width', st === 'added' ? 1.5 : st === 'removed' ? 1.2 : 0.4);
+        });
+      })
+      .on('click', function(e) {
+        e.stopPropagation();
+        showDiffModuleInspector(d3.select(this).attr('data-id'));
+      });
+  }
+
+  /* ── Edge interactions ── */
+  function attachEdgeInteractions() {
+    edgeHitG.selectAll('path')
+      .on('mouseenter', function(e) {
+        const sourceId = d3.select(this).attr('data-source');
+        const targetId = d3.select(this).attr('data-target');
+        const sn = nodeById.get(sourceId);
+        const tn = nodeById.get(targetId);
+        const status = edgeDiffStatus(sourceId, targetId);
+
+        edgeG.selectAll('path')
+          .transition().duration(120)
+          .attr('opacity', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === sourceId && t === targetId) ? 1 : 0.03;
+          })
+          .attr('stroke-width', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === sourceId && t === targetId) ? 3 : 0.4;
+          });
+
+        const statusLabel = status === 'added' ? ' (new)' : status === 'removed' ? ' (removed)' : '';
+        tooltip.classList.remove('hidden');
+        tooltip.innerHTML = `
+          <div class="tt-title"><span style="color:${layerColor(sn?.layer||'other')}">${sn?shortLabel(sn.label):'?'}</span> \u2192 <span style="color:${layerColor(tn?.layer||'other')}">${tn?shortLabel(tn.label):'?'}</span></div>
+          <div class="tt-row">Dependency${statusLabel}</div>
+        `;
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mousemove', e => {
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mouseleave', function() {
+        tooltip.classList.add('hidden');
+        edgeG.selectAll('path').each(function() {
+          const st = d3.select(this).attr('data-status');
+          const op = st === 'added' ? 0.7 : st === 'removed' ? 0.5 : 0.3;
+          d3.select(this).transition().duration(200).attr('opacity', op)
+            .attr('stroke-width', st === 'added' ? 1.5 : st === 'removed' ? 1.2 : 0.4);
+        });
+      })
+      .on('click', function(e) {
+        e.stopPropagation();
+        showDiffEdgeInspector(d3.select(this).attr('data-source'), d3.select(this).attr('data-target'));
+      });
+  }
+
+  /* ── Full draw ── */
+  function fullDraw() {
+    const visibleNodes = getVisibleNodes();
+    layout = computePositions(visibleNodes);
+    positions = layout.positions;
+
+    drawRings(layout.minR, layout.maxR, layout.ringStep);
+    drawSectors(layout.activeLayers, layout.sectors, layout.minR, layout.maxR);
+    drawEdges(positions);
+    drawNodes(positions);
+    drawLabels(positions);
+    attachNodeInteractions();
+    attachEdgeInteractions();
+  }
+
+  fullDraw();
+
+  /* ── Auto-fit ── */
+  const pad = 80;
+  const allPos = [...positions.values()];
+  if (allPos.length) {
+    const xs = allPos.map(p => p.x);
+    const ys = allPos.map(p => p.y);
+    const bx = Math.min(...xs) - pad, bX = Math.max(...xs) + pad;
+    const by = Math.min(...ys) - pad, bY = Math.max(...ys) + pad;
+    const bw = bX - bx, bh = bY - by;
+    const s = Math.min(width / bw, height / bh, 1.3);
+    const tx = (width - bw * s) / 2 - bx * s;
+    const ty = (height - bh * s) / 2 - by * s;
+    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
+  }
+
+  /* ── Background click ── */
+  svg.on('click', function(e) {
+    if (e.target === svg.node()) showDiffSummary();
+  });
+
+  /* ── Filter listeners ── */
+  function bindCategoryFilter(elId, category) {
+    const el = document.getElementById(elId);
+    if (el) el.addEventListener('change', function() {
+      if (this.checked) hiddenCategories.delete(category);
+      else hiddenCategories.add(category);
+      fullDraw();
+    });
+  }
+  bindCategoryFilter('diffShowAdded', 'added');
+  bindCategoryFilter('diffShowRemoved', 'removed');
+  bindCategoryFilter('diffShowChanged', 'changed');
+  bindCategoryFilter('diffShowUnchanged', 'unchanged');
+
+  document.getElementById('diffLabels')?.addEventListener('change', function() {
+    labelG.style('display', this.checked ? null : 'none');
+    badgeG.style('display', this.checked ? null : 'none');
+  });
+  document.getElementById('diffEdgesToggle')?.addEventListener('change', function() {
+    edgeG.style('display', this.checked ? null : 'none');
+    edgeHitG.style('display', this.checked ? null : 'none');
+  });
+  document.getElementById('diffRings')?.addEventListener('change', function() {
+    ringsG.style('display', this.checked ? null : 'none');
   });
 }
 
