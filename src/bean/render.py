@@ -519,6 +519,7 @@ function renderRadial() {
 
   /* ── State ── */
   const hiddenModules = new Set();
+  const hiddenLayers = new Set();
   let currentSizeMetric = 'symbolCount';
   let selectedNodeId = null;
 
@@ -559,14 +560,32 @@ function renderRadial() {
   checklistEl.innerHTML = checklistHtml;
 
   /* ── Show default architecture summary ── */
+  function isNodeVisible(n) {
+    return !hiddenModules.has(n.id) && !hiddenLayers.has(n.layer || 'other');
+  }
+
+  function getVisibleNodes() {
+    return allNodes.filter(isNodeVisible);
+  }
+
+  function getVisibleEdgeCount(visibleNodes) {
+    const visibleIds = new Set(visibleNodes.map(n => n.id));
+    let count = 0;
+    edges.forEach(e => {
+      if (visibleIds.has(e.source) && visibleIds.has(e.target)) count++;
+    });
+    return count;
+  }
+
   function showArchSummary() {
     selectedNodeId = null;
-    const visNodes = allNodes.filter(n => !hiddenModules.has(n.id));
+    const visNodes = getVisibleNodes();
+    const visEdgeCount = getVisibleEdgeCount(visNodes);
     const epCount = visNodes.filter(n => n.isEntryPoint).length;
     inspector.innerHTML = `
       <h3>Architecture</h3>
       <div class="inspector-row"><span class="label">Modules</span><span class="value">${visNodes.length}</span></div>
-      <div class="inspector-row"><span class="label">Dependencies</span><span class="value">${edges.length}</span></div>
+      <div class="inspector-row"><span class="label">Dependencies</span><span class="value">${visEdgeCount}</span></div>
       <div class="inspector-row"><span class="label">Entry points</span><span class="value">${epCount}</span></div>
       <div class="inspector-row"><span class="label">Layers</span><span class="value">${LAYERS.length}</span></div>
       <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click modules or edges to inspect. Hover for details.</div>
@@ -904,7 +923,7 @@ function renderRadial() {
 
   /* ── Full redraw ── */
   function fullDraw(animate) {
-    const visibleNodes = allNodes.filter(n => !hiddenModules.has(n.id));
+    const visibleNodes = getVisibleNodes();
     layout = computePositions(visibleNodes);
     positions = layout.positions;
 
@@ -950,7 +969,7 @@ function renderRadial() {
 
   /* ── Re-layout with animation ── */
   function reLayout() {
-    const visibleNodes = allNodes.filter(n => !hiddenModules.has(n.id));
+    const visibleNodes = getVisibleNodes();
     layout = computePositions(visibleNodes);
     positions = layout.positions;
 
@@ -1007,6 +1026,8 @@ function renderRadial() {
     edgeG.selectAll('path').attr('opacity', 1);
     attachEdgeInteractions();
     attachNodeInteractions();
+
+    if (selectedNodeId && !positions.has(selectedNodeId)) showArchSummary();
   }
 
   /* ══════════════════════════════════════════════════
@@ -1273,28 +1294,11 @@ function renderRadial() {
   });
   filters.querySelectorAll('.layer-filter').forEach(cb => {
     cb.addEventListener('change', () => {
-      const hiddenLayers = new Set();
+      hiddenLayers.clear();
       filters.querySelectorAll('.layer-filter').forEach(el => {
         if (!el.checked) hiddenLayers.add(el.dataset.layer);
       });
-      nodeG.selectAll('.rad-node').style('display', function() {
-        return hiddenLayers.has(d3.select(this).attr('data-layer')) ? 'none' : null;
-      });
-      labelG.selectAll('text').style('display', function() {
-        const id = d3.select(this).attr('data-id');
-        const n = nodeById.get(id);
-        return (n && hiddenLayers.has(n.layer)) ? 'none' : null;
-      });
-      edgeG.selectAll('path').style('display', function() {
-        const s = nodeById.get(d3.select(this).attr('data-source'));
-        const t = nodeById.get(d3.select(this).attr('data-target'));
-        return (s && hiddenLayers.has(s.layer)) || (t && hiddenLayers.has(t.layer)) ? 'none' : null;
-      });
-      edgeHitG.selectAll('path').style('display', function() {
-        const s = nodeById.get(d3.select(this).attr('data-source'));
-        const t = nodeById.get(d3.select(this).attr('data-target'));
-        return (s && hiddenLayers.has(s.layer)) || (t && hiddenLayers.has(t.layer)) ? 'none' : null;
-      });
+      reLayout();
     });
   });
 
