@@ -246,6 +246,44 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 .type-field-row{font-size:10px;fill:var(--text2)}
 .type-field-type{fill:var(--text3);font-style:italic}
 .type-kind-badge{font-size:8px;text-transform:uppercase;letter-spacing:0.05em}
+
+/* Rich inspector */
+.inspector-scrollable{max-height:calc(100vh - 220px);overflow-y:auto;margin-top:6px}
+.inspector-section{margin-top:8px;padding-top:6px;border-top:1px solid var(--border)}
+.inspector-section-title{font-size:11px;text-transform:uppercase;letter-spacing:0.05em;
+  color:var(--text3);margin-bottom:4px;font-weight:600}
+.fn-list-item{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;
+  border-bottom:1px solid rgba(148,163,184,0.06)}
+.fn-list-item .fn-name{color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fn-list-item .fn-stat{color:var(--text3);font-size:10px;min-width:28px;text-align:right}
+.fn-complexity{display:inline-block;width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.fn-complexity.high{background:#ef4444}
+.fn-complexity.med{background:#fbbf24}
+.fn-complexity.low{background:#10b981}
+.cls-list-item{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px;
+  border-bottom:1px solid rgba(148,163,184,0.06)}
+.cls-list-item .cls-name{color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cls-list-item .cls-stat{color:var(--text3);font-size:10px}
+
+/* Edge inspector pills */
+.symbol-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.symbol-pill{display:inline-block;background:var(--bg);border:1px solid var(--border);
+  border-radius:10px;padding:1px 8px;font-size:10px;color:var(--text2)}
+
+/* Node sizing dropdown */
+.sizing-select{background:var(--bg);border:1px solid var(--border);color:var(--text);
+  padding:4px 8px;border-radius:4px;font-size:11px;width:100%;margin-top:2px;cursor:pointer}
+.sizing-select:focus{border-color:var(--accent);outline:none}
+
+/* Module checklist */
+.module-checklist{max-height:200px;overflow-y:auto;margin-top:4px}
+.module-checklist-group{margin-bottom:4px}
+.module-checklist-group-label{font-size:10px;text-transform:uppercase;letter-spacing:0.04em;
+  color:var(--text3);padding:2px 0;font-weight:600}
+.module-check-item{display:flex;align-items:center;gap:5px;padding:1px 0;font-size:11px;
+  color:var(--text2);cursor:pointer}
+.module-check-item input[type=checkbox]{accent-color:var(--accent);width:12px;height:12px}
+.module-check-item:hover{color:var(--text)}
 """
 
 
@@ -470,32 +508,71 @@ function renderRadial() {
 
   renderLayerLegend();
 
+  const allNodes = D.galaxyNodes;
+  const edges = D.galaxyEdges;
+
+  if (!allNodes.length) {
+    inspector.innerHTML = '<h3>Radial</h3><div style="color:var(--text3);font-size:12px">No modules found</div>';
+    filters.innerHTML = '';
+    return;
+  }
+
+  /* ── State ── */
+  const hiddenModules = new Set();
+  let currentSizeMetric = 'symbolCount';
+  let selectedNodeId = null;
+
+  /* ── Sidebar: display toggles + sizing dropdown + module checklist ── */
   filters.innerHTML = `
     <h3>Display</h3>
     <div class="filter-toggle"><input type="checkbox" id="radLabels" checked/><label for="radLabels">Labels</label></div>
     <div class="filter-toggle"><input type="checkbox" id="radEdges" checked/><label for="radEdges">Dependencies</label></div>
     <div class="filter-toggle"><input type="checkbox" id="radRings" checked/><label for="radRings">Depth rings</label></div>
+    <h3 style="margin-top:8px">Node Size</h3>
+    <select class="sizing-select" id="radSizeMetric">
+      <option value="symbolCount" selected>Symbol count</option>
+      <option value="complexity">Complexity</option>
+      <option value="lineCount">Line count</option>
+      <option value="nImports">Import count</option>
+    </select>
     <h3 style="margin-top:8px">Layers</h3>
     ${LAYERS.map(l => `<div class="filter-toggle"><input type="checkbox" class="layer-filter" data-layer="${l}" checked/><label>${LAYER_LABELS[l]||l}</label></div>`).join('')}
+    <h3 style="margin-top:8px">Modules</h3>
+    <div class="module-checklist" id="moduleChecklist"></div>
   `;
 
-  const nodes = D.galaxyNodes;
-  const edges = D.galaxyEdges;
+  /* ── Build module checklist grouped by layer ── */
+  const checklistEl = document.getElementById('moduleChecklist');
+  const layerGroups = {};
+  allNodes.forEach(n => {
+    const l = n.layer || 'other';
+    (layerGroups[l] = layerGroups[l] || []).push(n);
+  });
+  let checklistHtml = '';
+  LAYERS.filter(l => layerGroups[l]).forEach(l => {
+    checklistHtml += `<div class="module-checklist-group"><div class="module-checklist-group-label" style="color:${layerColor(l)}">${LAYER_LABELS[l]||l}</div>`;
+    layerGroups[l].sort((a,b) => a.label.localeCompare(b.label)).forEach(n => {
+      checklistHtml += `<label class="module-check-item"><input type="checkbox" class="mod-check" data-id="${n.id}" checked/><span>${shortLabel(n.label)}</span></label>`;
+    });
+    checklistHtml += '</div>';
+  });
+  checklistEl.innerHTML = checklistHtml;
 
-  if (!nodes.length) {
-    inspector.innerHTML = '<h3>Radial</h3><div style="color:var(--text3);font-size:12px">No modules found</div>';
-    return;
+  /* ── Show default architecture summary ── */
+  function showArchSummary() {
+    selectedNodeId = null;
+    const visNodes = allNodes.filter(n => !hiddenModules.has(n.id));
+    const epCount = visNodes.filter(n => n.isEntryPoint).length;
+    inspector.innerHTML = `
+      <h3>Architecture</h3>
+      <div class="inspector-row"><span class="label">Modules</span><span class="value">${visNodes.length}</span></div>
+      <div class="inspector-row"><span class="label">Dependencies</span><span class="value">${edges.length}</span></div>
+      <div class="inspector-row"><span class="label">Entry points</span><span class="value">${epCount}</span></div>
+      <div class="inspector-row"><span class="label">Layers</span><span class="value">${LAYERS.length}</span></div>
+      <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click modules or edges to inspect. Hover for details.</div>
+    `;
   }
-
-  const epCount = nodes.filter(n => n.isEntryPoint).length;
-  inspector.innerHTML = `
-    <h3>Architecture</h3>
-    <div class="inspector-row"><span class="label">Modules</span><span class="value">${nodes.length}</span></div>
-    <div class="inspector-row"><span class="label">Dependencies</span><span class="value">${edges.length}</span></div>
-    <div class="inspector-row"><span class="label">Entry points</span><span class="value">${epCount}</span></div>
-    <div class="inspector-row"><span class="label">Layers</span><span class="value">${LAYERS.length}</span></div>
-    <div style="margin-top:6px;font-size:11px;color:var(--text3)">Inner ring = core modules. Outer ring = entry points. Hover for details, click to inspect.</div>
-  `;
+  showArchSummary();
 
   const svg = d3.select('#mainSvg');
   const width = svg.node().clientWidth;
@@ -510,8 +587,8 @@ function renderRadial() {
 
   /* ── Build import graph ── */
   const nodeById = new Map();
-  nodes.forEach(n => nodeById.set(n.id, n));
-  const nodeIdSet = new Set(nodes.map(n => n.id));
+  allNodes.forEach(n => nodeById.set(n.id, n));
+  const nodeIdSet = new Set(allNodes.map(n => n.id));
 
   const importsOf = new Map();
   edges.forEach(e => {
@@ -519,10 +596,11 @@ function renderRadial() {
     importsOf.get(e.source).add(e.target);
   });
 
-  /* ── Compute dependency depth ──
-     depth(m) = 0 if m has no internal imports (core)
-     depth(m) = max(depth(dep)) + 1 otherwise
-     Inner ring (0) = core, outer = entry points */
+  /* ── Edge lookup by key ── */
+  const edgeByKey = new Map();
+  edges.forEach(e => edgeByKey.set(e.source + '|' + e.target, e));
+
+  /* ── Compute dependency depth ── */
   const depthOf = new Map();
   const inProgress = new Set();
 
@@ -540,369 +618,627 @@ function renderRadial() {
     inProgress.delete(id);
     return d;
   }
-  nodes.forEach(n => calcDepth(n.id));
+  allNodes.forEach(n => calcDepth(n.id));
 
-  // Force entry-point modules to the outermost ring
   const naturalMax = Math.max(0, ...depthOf.values());
   const epRing = naturalMax + 1;
-  nodes.forEach(n => { if (n.isEntryPoint) depthOf.set(n.id, epRing); });
+  allNodes.forEach(n => { if (n.isEntryPoint) depthOf.set(n.id, epRing); });
 
   const maxDepth = Math.max(0, ...depthOf.values());
   const displayMax = Math.min(maxDepth, 12);
 
-  /* ── Sector layout: divide circle into layer wedges ── */
-  const layerBuckets = {};
-  LAYERS.forEach(l => { layerBuckets[l] = []; });
-  nodes.forEach(n => {
-    const l = n.layer || 'other';
-    if (!layerBuckets[l]) layerBuckets[l] = [];
-    layerBuckets[l].push(n);
-  });
-  const activeLayers = LAYERS.filter(l => (layerBuckets[l]||[]).length > 0);
+  /* ── Node size function ── */
+  function nodeSize(n, metric) {
+    let v;
+    switch(metric) {
+      case 'complexity': v = n.complexity || 0; return clamp(2.5 + Math.sqrt(v) * 1.4, 3, 16);
+      case 'lineCount': v = n.lineCount || 0; return clamp(2.5 + Math.sqrt(v / 10) * 1.4, 3, 16);
+      case 'nImports': v = n.nImports || 0; return clamp(2.5 + Math.sqrt(v) * 1.6, 3, 16);
+      default: v = n.symbolCount || 1; return clamp(2.5 + Math.sqrt(v) * 1.8, 3, 14);
+    }
+  }
 
-  const sectorGap = activeLayers.length > 1 ? 0.06 : 0;
-  const totalGap = sectorGap * activeLayers.length;
-  const availAngle = 2 * Math.PI - totalGap;
-  const totalN = nodes.length;
+  /* ── Reusable position computation for visible nodes ── */
+  function computePositions(visibleNodes) {
+    const layerBuckets = {};
+    LAYERS.forEach(l => { layerBuckets[l] = []; });
+    visibleNodes.forEach(n => {
+      const l = n.layer || 'other';
+      if (!layerBuckets[l]) layerBuckets[l] = [];
+      layerBuckets[l].push(n);
+    });
+    const actLayers = LAYERS.filter(l => (layerBuckets[l]||[]).length > 0);
 
-  const sectors = {};
-  let curAngle = -Math.PI / 2;
-  activeLayers.forEach(l => {
-    const cnt = layerBuckets[l].length;
-    const sweep = (cnt / totalN) * availAngle;
-    sectors[l] = { start: curAngle, end: curAngle + sweep };
-    curAngle += sweep + sectorGap;
-  });
+    const sectorGap = actLayers.length > 1 ? 0.06 : 0;
+    const totalGap = sectorGap * actLayers.length;
+    const availAngle = 2 * Math.PI - totalGap;
+    const totalN = visibleNodes.length || 1;
 
-  /* ── Position each node on its ring within its sector ── */
-  const minR = Math.max(40, Math.min(cx, cy) * 0.1);
-  const maxR = Math.min(cx, cy) - 60;
-  const ringStep = displayMax > 0 ? (maxR - minR) / displayMax : 0;
-  const positions = new Map();
-
-  activeLayers.forEach(layer => {
-    const sec = sectors[layer];
-    const mods = layerBuckets[layer];
-    const byDepth = {};
-    mods.forEach(n => {
-      const d = Math.min(depthOf.get(n.id)||0, displayMax);
-      (byDepth[d] = byDepth[d] || []).push(n);
+    const secs = {};
+    let curA = -Math.PI / 2;
+    actLayers.forEach(l => {
+      const cnt = layerBuckets[l].length;
+      const sweep = (cnt / totalN) * availAngle;
+      secs[l] = { start: curA, end: curA + sweep };
+      curA += sweep + sectorGap;
     });
 
-    Object.entries(byDepth).forEach(([dStr, arr]) => {
-      const d = parseInt(dStr);
-      const r = minR + d * ringStep;
-      arr.sort((a, b) => a.label.localeCompare(b.label));
-      const sweep = sec.end - sec.start;
-      arr.forEach((n, i) => {
-        const t = arr.length > 1 ? (i + 0.5) / arr.length : 0.5;
-        const a = sec.start + t * sweep;
-        positions.set(n.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), angle: a, r, depth: d });
+    const minR = Math.max(40, Math.min(cx, cy) * 0.1);
+    const maxR = Math.min(cx, cy) - 60;
+    const ringStep = displayMax > 0 ? (maxR - minR) / displayMax : 0;
+    const pos = new Map();
+
+    actLayers.forEach(layer => {
+      const sec = secs[layer];
+      const mods = layerBuckets[layer];
+      const byDepth = {};
+      mods.forEach(n => {
+        const d = Math.min(depthOf.get(n.id)||0, displayMax);
+        (byDepth[d] = byDepth[d] || []).push(n);
+      });
+
+      Object.entries(byDepth).forEach(([dStr, arr]) => {
+        const d = parseInt(dStr);
+        const r = minR + d * ringStep;
+        arr.sort((a, b) => a.label.localeCompare(b.label));
+        const sweep = sec.end - sec.start;
+        arr.forEach((n, i) => {
+          const t = arr.length > 1 ? (i + 0.5) / arr.length : 0.5;
+          const a = sec.start + t * sweep;
+          pos.set(n.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), angle: a, r, depth: d });
+        });
       });
     });
-  });
+
+    return { positions: pos, sectors: secs, activeLayers: actLayers, minR, maxR, ringStep };
+  }
+
+  /* ── Initial layout ── */
+  let layout = computePositions(allNodes);
+  let positions = layout.positions;
 
   /* ── Drawing layers ── */
   const ringsG = g.append('g').attr('class','rad-rings');
   const sectorG = g.append('g').attr('class','rad-sectors');
   const edgeG = g.append('g').attr('class','rad-edges');
+  const edgeHitG = g.append('g').attr('class','rad-edge-hits');
   const nodeG = g.append('g').attr('class','rad-nodes');
   const labelG = g.append('g').attr('class','rad-labels');
 
-  /* Concentric ring guides */
-  for (let d = 0; d <= displayMax; d++) {
-    const r = minR + d * ringStep;
-    ringsG.append('circle')
-      .attr('cx', cx).attr('cy', cy).attr('r', r)
-      .attr('fill','none')
-      .attr('stroke','var(--border)')
-      .attr('stroke-width', d === 0 || d === displayMax ? 0.7 : 0.3)
-      .attr('stroke-dasharray','4 8')
-      .attr('opacity', 0);
-  }
-
-  /* Center label */
-  ringsG.append('text')
-    .attr('x', cx).attr('y', cy + 4)
-    .attr('text-anchor','middle')
-    .attr('font-size', 10).attr('font-weight',700)
-    .attr('fill','var(--text3)')
-    .attr('letter-spacing','0.1em')
-    .attr('opacity', 0)
-    .text('CORE');
-
-  /* Depth ring annotations (right side) */
-  for (let d = 0; d <= displayMax; d++) {
-    const r = minR + d * ringStep;
-    const label = d === 0 ? 'core' : d === displayMax ? 'entry' : '';
-    if (!label) continue;
-    ringsG.append('text')
-      .attr('x', cx + r).attr('y', cy - 8)
-      .attr('text-anchor','middle')
-      .attr('font-size', 8).attr('fill','var(--text3)')
-      .attr('opacity', 0)
-      .text(label);
-  }
-
-  /* Sector backgrounds & labels */
-  activeLayers.forEach(layer => {
-    const sec = sectors[layer];
-    const mid = (sec.start + sec.end) / 2;
-
-    // Background arc (d3.arc uses clockwise from 12 o'clock)
-    const arc = d3.arc()
-      .innerRadius(minR - 8)
-      .outerRadius(maxR + 8)
-      .startAngle(sec.start + Math.PI / 2)
-      .endAngle(sec.end + Math.PI / 2);
-
-    sectorG.append('path')
-      .attr('d', arc())
-      .attr('transform', `translate(${cx},${cy})`)
-      .attr('fill', layerColor(layer))
-      .attr('fill-opacity', 0.025)
-      .attr('stroke','none');
-
-    // Divider line at sector start
-    if (activeLayers.length > 1) {
-      sectorG.append('line')
-        .attr('x1', cx + (minR - 12) * Math.cos(sec.start))
-        .attr('y1', cy + (minR - 12) * Math.sin(sec.start))
-        .attr('x2', cx + (maxR + 12) * Math.cos(sec.start))
-        .attr('y2', cy + (maxR + 12) * Math.sin(sec.start))
-        .attr('stroke', layerColor(layer))
-        .attr('stroke-width', 0.4)
-        .attr('stroke-opacity', 0.25);
+  /* ── Draw rings ── */
+  function drawRings(lMinR, lMaxR, lRingStep) {
+    ringsG.selectAll('*').remove();
+    for (let d = 0; d <= displayMax; d++) {
+      const r = lMinR + d * lRingStep;
+      ringsG.append('circle')
+        .attr('cx', cx).attr('cy', cy).attr('r', r)
+        .attr('fill','none')
+        .attr('stroke','var(--border)')
+        .attr('stroke-width', d === 0 || d === displayMax ? 0.7 : 0.3)
+        .attr('stroke-dasharray','4 8')
+        .attr('opacity', 0);
     }
-
-    // Sector label at outer edge
-    const lR = maxR + 32;
-    const lx = cx + lR * Math.cos(mid);
-    const ly = cy + lR * Math.sin(mid);
-    sectorG.append('text')
-      .attr('x', lx).attr('y', ly + 3)
+    ringsG.append('text')
+      .attr('x', cx).attr('y', cy + 4)
       .attr('text-anchor','middle')
-      .attr('dominant-baseline','middle')
-      .attr('font-size', 11).attr('font-weight',600)
-      .attr('fill', layerColor(layer))
-      .attr('opacity', 0.8)
-      .text(LAYER_LABELS[layer] || layer);
-  });
+      .attr('font-size', 10).attr('font-weight',700)
+      .attr('fill','var(--text3)')
+      .attr('letter-spacing','0.1em')
+      .attr('opacity', 0)
+      .text('CORE');
+    for (let d = 0; d <= displayMax; d++) {
+      const r = lMinR + d * lRingStep;
+      const lbl = d === 0 ? 'core' : d === displayMax ? 'entry' : '';
+      if (!lbl) continue;
+      ringsG.append('text')
+        .attr('x', cx + r).attr('y', cy - 8)
+        .attr('text-anchor','middle')
+        .attr('font-size', 8).attr('fill','var(--text3)')
+        .attr('opacity', 0)
+        .text(lbl);
+    }
+  }
 
-  /* ── Edges (bundled toward center) ── */
-  edges.forEach(e => {
-    const sp = positions.get(e.source);
-    const tp = positions.get(e.target);
-    if (!sp || !tp) return;
+  /* ── Draw sectors ── */
+  function drawSectors(actLayers, secs, lMinR, lMaxR) {
+    sectorG.selectAll('*').remove();
+    actLayers.forEach(layer => {
+      const sec = secs[layer];
+      const mid = (sec.start + sec.end) / 2;
 
+      const arc = d3.arc()
+        .innerRadius(lMinR - 8)
+        .outerRadius(lMaxR + 8)
+        .startAngle(sec.start + Math.PI / 2)
+        .endAngle(sec.end + Math.PI / 2);
+
+      sectorG.append('path')
+        .attr('d', arc())
+        .attr('transform', `translate(${cx},${cy})`)
+        .attr('fill', layerColor(layer))
+        .attr('fill-opacity', 0.025)
+        .attr('stroke','none');
+
+      if (actLayers.length > 1) {
+        sectorG.append('line')
+          .attr('x1', cx + (lMinR - 12) * Math.cos(sec.start))
+          .attr('y1', cy + (lMinR - 12) * Math.sin(sec.start))
+          .attr('x2', cx + (lMaxR + 12) * Math.cos(sec.start))
+          .attr('y2', cy + (lMaxR + 12) * Math.sin(sec.start))
+          .attr('stroke', layerColor(layer))
+          .attr('stroke-width', 0.4)
+          .attr('stroke-opacity', 0.25);
+      }
+
+      const lR = lMaxR + 32;
+      const lx = cx + lR * Math.cos(mid);
+      const ly = cy + lR * Math.sin(mid);
+      sectorG.append('text')
+        .attr('x', lx).attr('y', ly + 3)
+        .attr('text-anchor','middle')
+        .attr('dominant-baseline','middle')
+        .attr('font-size', 11).attr('font-weight',600)
+        .attr('fill', layerColor(layer))
+        .attr('opacity', 0.8)
+        .text(LAYER_LABELS[layer] || layer);
+    });
+  }
+
+  /* ── Helper: compute edge path ── */
+  function edgePath(sp, tp) {
     const bundle = 0.55;
     const mx = (sp.x + tp.x) / 2;
     const my = (sp.y + tp.y) / 2;
     const qx = mx + (cx - mx) * bundle;
     const qy = my + (cy - my) * bundle;
+    return `M${sp.x},${sp.y} Q${qx},${qy} ${tp.x},${tp.y}`;
+  }
 
-    edgeG.append('path')
-      .attr('d', `M${sp.x},${sp.y} Q${qx},${qy} ${tp.x},${tp.y}`)
-      .attr('fill','none')
-      .attr('stroke','rgba(148,163,184,0.08)')
-      .attr('stroke-width', clamp(0.4 + (e.count||1) * 0.25, 0.4, 3))
-      .attr('data-source', e.source)
-      .attr('data-target', e.target)
-      .attr('opacity', 0);
-  });
+  /* ── Draw edges (visible + invisible hit area) ── */
+  function drawEdges(pos) {
+    edgeG.selectAll('*').remove();
+    edgeHitG.selectAll('*').remove();
 
-  /* ── Nodes ── */
-  nodes.forEach(n => {
-    const pos = positions.get(n.id);
-    if (!pos) return;
-    const sz = clamp(2.5 + Math.sqrt(n.symbolCount||1) * 1.8, 3, 14);
+    edges.forEach(e => {
+      const sp = pos.get(e.source);
+      const tp = pos.get(e.target);
+      if (!sp || !tp) return;
 
-    const ng = nodeG.append('g')
-      .attr('transform', `translate(${pos.x},${pos.y})`)
-      .attr('class','rad-node')
-      .attr('data-id', n.id)
-      .attr('data-layer', n.layer)
-      .attr('data-depth', pos.depth)
-      .style('cursor','pointer')
-      .attr('opacity', 0);
+      const d = edgePath(sp, tp);
 
-    // Ambient glow
-    ng.append('circle').attr('r', sz + 3)
-      .attr('fill', layerColor(n.layer)).attr('fill-opacity', 0.08);
-
-    // Main dot
-    ng.append('circle').attr('r', sz)
-      .attr('fill', `url(#grad-${n.layer})`)
-      .attr('stroke', d3.color(layerColor(n.layer)).brighter(0.5))
-      .attr('stroke-width', n.isEntryPoint ? 1.5 : 0.5);
-
-    // Entry point ring
-    if (n.isEntryPoint) {
-      ng.append('circle').attr('r', sz + 5)
+      edgeG.append('path')
+        .attr('d', d)
         .attr('fill','none')
-        .attr('stroke', layerColor(n.layer))
-        .attr('stroke-width', 0.7)
-        .attr('stroke-dasharray','3 3')
-        .attr('opacity', 0.5);
-    }
-
-    // Hotspot ring
-    if (n.isHotspot) {
-      ng.append('circle').attr('r', sz + 2)
-        .attr('fill','none')
-        .attr('stroke','#ef4444')
-        .attr('stroke-width', 0.5)
-        .attr('opacity', 0.5);
-    }
-  });
-
-  /* ── Labels ── */
-  nodes.forEach(n => {
-    const pos = positions.get(n.id);
-    if (!pos) return;
-    const sz = clamp(2.5 + Math.sqrt(n.symbolCount||1) * 1.8, 3, 14);
-    const dx = pos.x - cx;
-    const dy = pos.y - cy;
-    const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-    const nx = dx / dist;
-    const ny = dy / dist;
-    const off = sz + 5;
-    const lx = pos.x + nx * off;
-    const ly = pos.y + ny * off;
-    let anchor = 'start';
-    if (nx < -0.3) anchor = 'end';
-    else if (Math.abs(nx) <= 0.3) anchor = 'middle';
-
-    labelG.append('text')
-      .attr('x', lx).attr('y', ly + 3)
-      .attr('text-anchor', anchor)
-      .attr('font-size', 9)
-      .attr('fill','var(--text3)')
-      .attr('paint-order','stroke')
-      .attr('stroke','var(--bg)')
-      .attr('stroke-width', 2)
-      .attr('stroke-linejoin','round')
-      .attr('pointer-events','none')
-      .attr('data-id', n.id)
-      .attr('data-depth', pos.depth)
-      .attr('opacity', 0)
-      .text(shortLabel(n.label));
-  });
-
-  /* ── Interactions ── */
-  nodeG.selectAll('.rad-node')
-    .on('mouseenter', function(e) {
-      const id = d3.select(this).attr('data-id');
-      const n = nodeById.get(id);
-      if (!n) return;
-      const pos = positions.get(id);
-
-      // Find connected modules
-      const connected = new Set([id]);
-      edges.forEach(ed => {
-        if (ed.source === id) connected.add(ed.target);
-        if (ed.target === id) connected.add(ed.source);
-      });
-
-      // Dim non-connected
-      nodeG.selectAll('.rad-node')
-        .transition().duration(120)
-        .attr('opacity', function() { return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.1; });
-
-      labelG.selectAll('text')
-        .transition().duration(120)
-        .attr('opacity', function() { return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.05; });
-
-      // Highlight connected edges
-      edgeG.selectAll('path')
-        .transition().duration(120)
-        .attr('stroke', function() {
-          const s = d3.select(this).attr('data-source');
-          const t = d3.select(this).attr('data-target');
-          return (s === id || t === id) ? layerColor(n.layer) : 'rgba(148,163,184,0.04)';
-        })
-        .attr('stroke-width', function() {
-          const s = d3.select(this).attr('data-source');
-          const t = d3.select(this).attr('data-target');
-          return (s === id || t === id) ? 2.2 : 0.4;
-        });
-
-      // Tooltip
-      tooltip.classList.remove('hidden');
-      tooltip.innerHTML = `
-        <div class="tt-title" style="color:${layerColor(n.layer)}">${n.label}</div>
-        <div class="tt-row">Layer: ${LAYER_LABELS[n.layer]||n.layer} · Depth: ${pos?.depth??'?'}</div>
-        <div class="tt-row">${n.nFunctions||0} functions · ${n.nClasses||0} classes · Complexity: ${n.complexity}</div>
-        ${n.isEntryPoint ? '<div class="tt-row" style="color:var(--gold)">★ Entry point module</div>' : ''}
-        ${n.isHotspot ? '<div class="tt-row" style="color:#ef4444">● Complexity hotspot</div>' : ''}
-      `;
-      tooltip.style.left = (e.clientX + 16) + 'px';
-      tooltip.style.top = (e.clientY - 10) + 'px';
-    })
-    .on('mousemove', e => {
-      tooltip.style.left = (e.clientX + 16) + 'px';
-      tooltip.style.top = (e.clientY - 10) + 'px';
-    })
-    .on('mouseleave', function() {
-      tooltip.classList.add('hidden');
-      nodeG.selectAll('.rad-node').transition().duration(200).attr('opacity', 1);
-      labelG.selectAll('text').transition().duration(200).attr('opacity', 1);
-      edgeG.selectAll('path').transition().duration(200)
         .attr('stroke','rgba(148,163,184,0.08)')
-        .attr('stroke-width', function() {
-          const s = d3.select(this).attr('data-source');
-          const t = d3.select(this).attr('data-target');
-          const ed = edges.find(e => e.source === s && e.target === t);
-          return clamp(0.4 + ((ed?.count)||1) * 0.25, 0.4, 3);
-        });
-    })
-    .on('click', function(e) {
-      const id = d3.select(this).attr('data-id');
-      const n = nodeById.get(id);
-      if (!n) return;
-      const pos = positions.get(id);
-      const inDeps = edges.filter(ed => ed.target === id);
-      const outDeps = edges.filter(ed => ed.source === id);
-      inspector.innerHTML = `
-        <h3>Module</h3>
-        <div class="inspector-title" style="color:${layerColor(n.layer)}">${n.label}</div>
-        <div class="inspector-row"><span class="label">Layer</span><span class="value">${LAYER_LABELS[n.layer]||n.layer}</span></div>
-        <div class="inspector-row"><span class="label">Depth</span><span class="value">${pos?.depth??'?'}</span></div>
-        <div class="inspector-row"><span class="label">Functions</span><span class="value">${n.nFunctions||0}</span></div>
-        <div class="inspector-row"><span class="label">Classes</span><span class="value">${n.nClasses||0}</span></div>
-        <div class="inspector-row"><span class="label">Complexity</span><span class="value">${n.complexity||0}</span></div>
-        ${n.isEntryPoint ? '<div class="inspector-row"><span class="label">Entry point</span><span class="value" style="color:var(--gold)">★</span></div>' : ''}
-        ${outDeps.length ? `<div style="margin-top:6px;font-size:11px;color:var(--text3)">Depends on (${outDeps.length}):</div>` +
-          outDeps.slice(0,10).map(ed => { const t = nodeById.get(ed.target); return `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(t?.layer||'other')}">${t?shortLabel(t.label):ed.target}</span><span class="value" style="font-size:9px">${ed.count}</span></div>`; }).join('') : ''}
-        ${inDeps.length ? `<div style="margin-top:6px;font-size:11px;color:var(--text3)">Imported by (${inDeps.length}):</div>` +
-          inDeps.slice(0,10).map(ed => { const s = nodeById.get(ed.source); return `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(s?.layer||'other')}">${s?shortLabel(s.label):ed.source}</span><span class="value" style="font-size:9px">${ed.count}</span></div>`; }).join('') : ''}
-      `;
+        .attr('stroke-width', clamp(0.4 + (e.count||1) * 0.25, 0.4, 3))
+        .attr('data-source', e.source)
+        .attr('data-target', e.target)
+        .attr('opacity', 0);
+
+      edgeHitG.append('path')
+        .attr('d', d)
+        .attr('fill','none')
+        .attr('stroke','transparent')
+        .attr('stroke-width', 12)
+        .attr('data-source', e.source)
+        .attr('data-target', e.target)
+        .style('cursor','pointer');
     });
+  }
 
-  /* ── Animated reveal: center outward ── */
-  const revealMs = 70;
+  /* ── Draw nodes ── */
+  function drawNodes(pos, metric) {
+    nodeG.selectAll('*').remove();
+    allNodes.forEach(n => {
+      const p = pos.get(n.id);
+      if (!p) return;
+      const sz = nodeSize(n, metric);
 
-  // Rings
-  ringsG.selectAll('circle').each(function(d, i) {
-    d3.select(this).transition().delay(i * revealMs).duration(400).attr('opacity', 1);
-  });
-  ringsG.selectAll('text').transition().delay(100).duration(500).attr('opacity', 0.5);
+      const ng = nodeG.append('g')
+        .attr('transform', `translate(${p.x},${p.y})`)
+        .attr('class','rad-node')
+        .attr('data-id', n.id)
+        .attr('data-layer', n.layer)
+        .attr('data-depth', p.depth)
+        .style('cursor','pointer')
+        .attr('opacity', 0);
 
-  // Nodes by depth
-  for (let d = 0; d <= displayMax; d++) {
-    const delay = d * revealMs + 80;
-    nodeG.selectAll(`.rad-node[data-depth="${d}"]`)
-      .transition().delay(delay).duration(300).ease(d3.easeBackOut)
-      .attr('opacity', 1);
-    labelG.selectAll(`text[data-depth="${d}"]`)
-      .transition().delay(delay + 50).duration(250)
+      ng.append('circle').attr('class','node-glow').attr('r', sz + 3)
+        .attr('fill', layerColor(n.layer)).attr('fill-opacity', 0.08);
+      ng.append('circle').attr('class','node-main').attr('r', sz)
+        .attr('fill', `url(#grad-${n.layer})`)
+        .attr('stroke', d3.color(layerColor(n.layer)).brighter(0.5))
+        .attr('stroke-width', n.isEntryPoint ? 1.5 : 0.5);
+      if (n.isEntryPoint) {
+        ng.append('circle').attr('class','node-ep').attr('r', sz + 5)
+          .attr('fill','none')
+          .attr('stroke', layerColor(n.layer))
+          .attr('stroke-width', 0.7)
+          .attr('stroke-dasharray','3 3')
+          .attr('opacity', 0.5);
+      }
+      if (n.isHotspot) {
+        ng.append('circle').attr('class','node-hotspot').attr('r', sz + 2)
+          .attr('fill','none')
+          .attr('stroke','#ef4444')
+          .attr('stroke-width', 0.5)
+          .attr('opacity', 0.5);
+      }
+    });
+  }
+
+  /* ── Draw labels ── */
+  function drawLabels(pos, metric) {
+    labelG.selectAll('*').remove();
+    allNodes.forEach(n => {
+      const p = pos.get(n.id);
+      if (!p) return;
+      const sz = nodeSize(n, metric);
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const nx = dx / dist;
+      const off = sz + 5;
+      const lx = p.x + nx * off;
+      const ly = p.y + (dy / dist) * off;
+      let anchor = 'start';
+      if (nx < -0.3) anchor = 'end';
+      else if (Math.abs(nx) <= 0.3) anchor = 'middle';
+
+      labelG.append('text')
+        .attr('x', lx).attr('y', ly + 3)
+        .attr('text-anchor', anchor)
+        .attr('font-size', 9)
+        .attr('fill','var(--text3)')
+        .attr('paint-order','stroke')
+        .attr('stroke','var(--bg)')
+        .attr('stroke-width', 2)
+        .attr('stroke-linejoin','round')
+        .attr('pointer-events','none')
+        .attr('data-id', n.id)
+        .attr('data-depth', p.depth)
+        .attr('opacity', 0)
+        .text(shortLabel(n.label));
+    });
+  }
+
+  /* ── Full redraw ── */
+  function fullDraw(animate) {
+    const visibleNodes = allNodes.filter(n => !hiddenModules.has(n.id));
+    layout = computePositions(visibleNodes);
+    positions = layout.positions;
+
+    drawRings(layout.minR, layout.maxR, layout.ringStep);
+    drawSectors(layout.activeLayers, layout.sectors, layout.minR, layout.maxR);
+    drawEdges(positions);
+    drawNodes(positions, currentSizeMetric);
+    drawLabels(positions, currentSizeMetric);
+    attachNodeInteractions();
+    attachEdgeInteractions();
+
+    if (animate) animateReveal();
+    else {
+      ringsG.selectAll('circle').attr('opacity', 1);
+      ringsG.selectAll('text').attr('opacity', 0.5);
+      nodeG.selectAll('.rad-node').attr('opacity', 1);
+      labelG.selectAll('text').attr('opacity', 1);
+      edgeG.selectAll('path').attr('opacity', 1);
+    }
+  }
+
+  /* ── Animated reveal ── */
+  function animateReveal() {
+    const revealMs = 70;
+    ringsG.selectAll('circle').each(function(d, i) {
+      d3.select(this).transition().delay(i * revealMs).duration(400).attr('opacity', 1);
+    });
+    ringsG.selectAll('text').transition().delay(100).duration(500).attr('opacity', 0.5);
+
+    for (let d = 0; d <= displayMax; d++) {
+      const delay = d * revealMs + 80;
+      nodeG.selectAll(`.rad-node[data-depth="${d}"]`)
+        .transition().delay(delay).duration(300).ease(d3.easeBackOut)
+        .attr('opacity', 1);
+      labelG.selectAll(`text[data-depth="${d}"]`)
+        .transition().delay(delay + 50).duration(250)
+        .attr('opacity', 1);
+    }
+    edgeG.selectAll('path')
+      .transition().delay(displayMax * revealMs + 200).duration(500)
       .attr('opacity', 1);
   }
 
-  // Edges last
-  edgeG.selectAll('path')
-    .transition().delay(displayMax * revealMs + 200).duration(500)
-    .attr('opacity', 1);
+  /* ── Re-layout with animation ── */
+  function reLayout() {
+    const visibleNodes = allNodes.filter(n => !hiddenModules.has(n.id));
+    layout = computePositions(visibleNodes);
+    positions = layout.positions;
+
+    drawRings(layout.minR, layout.maxR, layout.ringStep);
+    drawSectors(layout.activeLayers, layout.sectors, layout.minR, layout.maxR);
+    ringsG.selectAll('circle').attr('opacity', 1);
+    ringsG.selectAll('text').attr('opacity', 0.5);
+
+    nodeG.selectAll('.rad-node').each(function() {
+      const el = d3.select(this);
+      const id = el.attr('data-id');
+      const p = positions.get(id);
+      if (!p) {
+        el.transition().duration(300).attr('opacity', 0).remove();
+      } else {
+        const n = nodeById.get(id);
+        const sz = nodeSize(n, currentSizeMetric);
+        el.transition().duration(500).ease(d3.easeCubicOut)
+          .attr('transform', `translate(${p.x},${p.y})`)
+          .attr('opacity', 1);
+        el.select('.node-glow').transition().duration(500).attr('r', sz + 3);
+        el.select('.node-main').transition().duration(500).attr('r', sz);
+        if (n.isEntryPoint) el.select('.node-ep').transition().duration(500).attr('r', sz + 5);
+        if (n.isHotspot) el.select('.node-hotspot').transition().duration(500).attr('r', sz + 2);
+      }
+    });
+
+    labelG.selectAll('text').each(function() {
+      const el = d3.select(this);
+      const id = el.attr('data-id');
+      const p = positions.get(id);
+      if (!p) {
+        el.transition().duration(300).attr('opacity', 0).remove();
+      } else {
+        const n = nodeById.get(id);
+        const sz = nodeSize(n, currentSizeMetric);
+        const dx = p.x - cx;
+        const dy = p.y - cy;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        const nx = dx / dist;
+        const off = sz + 5;
+        let anchor = 'start';
+        if (nx < -0.3) anchor = 'end';
+        else if (Math.abs(nx) <= 0.3) anchor = 'middle';
+        el.transition().duration(500).ease(d3.easeCubicOut)
+          .attr('x', p.x + (dx/dist) * off)
+          .attr('y', p.y + (dy/dist) * off + 3)
+          .attr('text-anchor', anchor)
+          .attr('opacity', 1);
+      }
+    });
+
+    drawEdges(positions);
+    edgeG.selectAll('path').attr('opacity', 1);
+    attachEdgeInteractions();
+    attachNodeInteractions();
+  }
+
+  /* ══════════════════════════════════════════════════
+     RICH MODULE CLICK INSPECTOR
+     ══════════════════════════════════════════════════ */
+  function showModuleInspector(id) {
+    const n = nodeById.get(id);
+    if (!n) return;
+    selectedNodeId = id;
+    const pos = positions.get(id);
+    const moduleId = id.replace(/^module:/, '');
+
+    const symbolNodes = (D.drillLevels && D.drillLevels.symbol && D.drillLevels.symbol.nodes) || [];
+    const fns = symbolNodes.filter(s => s.parent === id && s.kind === 'function');
+    const clsSyms = symbolNodes.filter(s => s.parent === id && s.kind === 'class');
+    const classes = (D.classes || []).filter(c => c.module === moduleId);
+    const eps = (D.entrypoints || []).filter(ep => ep.module === moduleId);
+    const outDeps = edges.filter(ed => ed.source === id);
+    const inDeps = edges.filter(ed => ed.target === id);
+
+    let html = `<h3>Module</h3>`;
+    html += `<div class="inspector-title" style="color:${layerColor(n.layer)}">${n.label}</div>`;
+    html += `<div class="inspector-scrollable">`;
+
+    html += `<div class="inspector-row"><span class="label">Path</span><span class="value" style="font-size:10px;word-break:break-all">${n.path||moduleId}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Layer</span><span class="value">${LAYER_LABELS[n.layer]||n.layer}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Depth</span><span class="value">${pos?.depth??'?'}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Lines</span><span class="value">${n.lineCount||'?'}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Complexity</span><span class="value">${n.complexity||0}</span></div>`;
+    if (n.isEntryPoint) html += `<div class="inspector-row"><span class="label">Entry point</span><span class="value" style="color:var(--gold)">★</span></div>`;
+    if (n.isHotspot) html += `<div class="inspector-row"><span class="label">Hotspot</span><span class="value" style="color:#ef4444">●</span></div>`;
+
+    if (fns.length) {
+      const sorted = fns.slice().sort((a,b) => (b.complexity||0) - (a.complexity||0));
+      html += `<div class="inspector-section"><div class="inspector-section-title">Functions (${fns.length})</div>`;
+      sorted.forEach(f => {
+        const c = f.complexity || 0;
+        const cls = c >= 15 ? 'high' : c >= 6 ? 'med' : 'low';
+        const name = f.label.includes('.') ? f.label.split('.').pop() : f.label;
+        html += `<div class="fn-list-item"><span class="fn-complexity ${cls}"></span><span class="fn-name" title="${f.label}">${name}</span><span class="fn-stat">${f.span||'?'}L</span><span class="fn-stat">C${c}</span></div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (classes.length) {
+      html += `<div class="inspector-section"><div class="inspector-section-title">Classes (${classes.length})</div>`;
+      classes.forEach(c => {
+        html += `<div class="cls-list-item"><span class="cls-name" title="${c.name}">${c.name}</span><span class="cls-stat">${c.methodCount||0}m</span><span class="cls-stat">${c.fieldCount||0}f</span></div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (eps.length) {
+      html += `<div class="inspector-section"><div class="inspector-section-title">Entry Points (${eps.length})</div>`;
+      eps.forEach(ep => {
+        html += `<div class="fn-list-item"><span class="fn-complexity low"></span><span class="fn-name" title="${ep.target}">${ep.target.split(':').pop()}</span><span class="fn-stat" style="color:var(--gold)">${ep.kind}</span></div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (outDeps.length) {
+      html += `<div class="inspector-section"><div class="inspector-section-title">Depends on (${outDeps.length})</div>`;
+      outDeps.forEach(ed => {
+        const t = nodeById.get(ed.target);
+        const names = (ed.names || []).slice(0, 5);
+        html += `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(t?.layer||'other')}">${t?shortLabel(t.label):ed.target}</span><span class="value" style="font-size:9px">${ed.count}</span></div>`;
+        if (names.length) html += `<div class="symbol-pills">${names.map(nm => `<span class="symbol-pill">${nm}</span>`).join('')}${ed.names.length > 5 ? `<span class="symbol-pill">+${ed.names.length-5}</span>` : ''}</div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (inDeps.length) {
+      html += `<div class="inspector-section"><div class="inspector-section-title">Imported by (${inDeps.length})</div>`;
+      inDeps.forEach(ed => {
+        const s = nodeById.get(ed.source);
+        html += `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(s?.layer||'other')}">${s?shortLabel(s.label):ed.source}</span><span class="value" style="font-size:9px">${ed.count}</span></div>`;
+      });
+      html += `</div>`;
+    }
+
+    html += `</div>`;
+    inspector.innerHTML = html;
+  }
+
+  /* ══════════════════════════════════════════════════
+     RICH EDGE CLICK INSPECTOR
+     ══════════════════════════════════════════════════ */
+  function showEdgeInspector(sourceId, targetId) {
+    selectedNodeId = null;
+    const sn = nodeById.get(sourceId);
+    const tn = nodeById.get(targetId);
+    const ed = edgeByKey.get(sourceId + '|' + targetId);
+    if (!sn || !tn || !ed) return;
+
+    const names = ed.names || [];
+    let html = `<h3>Dependency</h3>`;
+    html += `<div class="inspector-scrollable">`;
+    html += `<div class="inspector-row"><span class="label">From</span><span class="value" style="color:${layerColor(sn.layer)}">${shortLabel(sn.label)}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">To</span><span class="value" style="color:${layerColor(tn.layer)}">${shortLabel(tn.label)}</span></div>`;
+    html += `<div class="inspector-row"><span class="label">Imports</span><span class="value">${ed.count}</span></div>`;
+    if (names.length) {
+      html += `<div class="inspector-section"><div class="inspector-section-title">Imported Symbols (${names.length})</div>`;
+      html += `<div class="symbol-pills">${names.map(nm => `<span class="symbol-pill">${nm}</span>`).join('')}</div>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+    inspector.innerHTML = html;
+  }
+
+  /* ── Node interactions ── */
+  function attachNodeInteractions() {
+    nodeG.selectAll('.rad-node')
+      .on('mouseenter', function(e) {
+        const id = d3.select(this).attr('data-id');
+        const n = nodeById.get(id);
+        if (!n) return;
+        const pos = positions.get(id);
+        const connected = new Set([id]);
+        edges.forEach(ed => {
+          if (ed.source === id) connected.add(ed.target);
+          if (ed.target === id) connected.add(ed.source);
+        });
+
+        nodeG.selectAll('.rad-node')
+          .transition().duration(120)
+          .attr('opacity', function() { return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.1; });
+        labelG.selectAll('text')
+          .transition().duration(120)
+          .attr('opacity', function() { return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.05; });
+        edgeG.selectAll('path')
+          .transition().duration(120)
+          .attr('stroke', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === id || t === id) ? layerColor(n.layer) : 'rgba(148,163,184,0.04)';
+          })
+          .attr('stroke-width', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === id || t === id) ? 2.2 : 0.4;
+          });
+
+        tooltip.classList.remove('hidden');
+        tooltip.innerHTML = `
+          <div class="tt-title" style="color:${layerColor(n.layer)}">${n.label}</div>
+          <div class="tt-row">Layer: ${LAYER_LABELS[n.layer]||n.layer} · Depth: ${pos?.depth??'?'}</div>
+          <div class="tt-row">${n.nFunctions||0} fn · ${n.nClasses||0} cls · ${n.lineCount||'?'} lines · C${n.complexity||0}</div>
+          ${n.isEntryPoint ? '<div class="tt-row" style="color:var(--gold)">★ Entry point module</div>' : ''}
+          ${n.isHotspot ? '<div class="tt-row" style="color:#ef4444">● Complexity hotspot</div>' : ''}
+        `;
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mousemove', e => {
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mouseleave', function() {
+        tooltip.classList.add('hidden');
+        nodeG.selectAll('.rad-node').transition().duration(200).attr('opacity', 1);
+        labelG.selectAll('text').transition().duration(200).attr('opacity', 1);
+        edgeG.selectAll('path').transition().duration(200)
+          .attr('stroke','rgba(148,163,184,0.08)')
+          .attr('stroke-width', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            const ed = edgeByKey.get(s + '|' + t);
+            return clamp(0.4 + ((ed?.count)||1) * 0.25, 0.4, 3);
+          });
+      })
+      .on('click', function(e) {
+        e.stopPropagation();
+        showModuleInspector(d3.select(this).attr('data-id'));
+      });
+  }
+
+  /* ── Edge interactions ── */
+  function attachEdgeInteractions() {
+    edgeHitG.selectAll('path')
+      .on('mouseenter', function(e) {
+        const sourceId = d3.select(this).attr('data-source');
+        const targetId = d3.select(this).attr('data-target');
+        const sn = nodeById.get(sourceId);
+        const tn = nodeById.get(targetId);
+        const ed = edgeByKey.get(sourceId + '|' + targetId);
+
+        edgeG.selectAll('path')
+          .transition().duration(120)
+          .attr('stroke', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === sourceId && t === targetId) ? layerColor(sn?.layer||'other') : 'rgba(148,163,184,0.04)';
+          })
+          .attr('stroke-width', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            return (s === sourceId && t === targetId) ? 3 : 0.4;
+          });
+
+        const names = (ed?.names || []).slice(0, 6);
+        const preview = names.length ? names.join(', ') + (ed.names.length > 6 ? ' ...' : '') : '';
+        tooltip.classList.remove('hidden');
+        tooltip.innerHTML = `
+          <div class="tt-title"><span style="color:${layerColor(sn?.layer||'other')}">${sn?shortLabel(sn.label):'?'}</span> → <span style="color:${layerColor(tn?.layer||'other')}">${tn?shortLabel(tn.label):'?'}</span></div>
+          <div class="tt-row">${ed?.count||0} imports${preview ? ': ' + preview : ''}</div>
+        `;
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mousemove', e => {
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mouseleave', function() {
+        tooltip.classList.add('hidden');
+        edgeG.selectAll('path').transition().duration(200)
+          .attr('stroke','rgba(148,163,184,0.08)')
+          .attr('stroke-width', function() {
+            const s = d3.select(this).attr('data-source');
+            const t = d3.select(this).attr('data-target');
+            const ed = edgeByKey.get(s + '|' + t);
+            return clamp(0.4 + ((ed?.count)||1) * 0.25, 0.4, 3);
+          });
+      })
+      .on('click', function(e) {
+        e.stopPropagation();
+        showEdgeInspector(d3.select(this).attr('data-source'), d3.select(this).attr('data-target'));
+      });
+  }
+
+  /* ── Initial draw ── */
+  fullDraw(true);
 
   /* ── Auto-fit ── */
   const pad = 80;
@@ -919,35 +1255,91 @@ function renderRadial() {
     svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
   }
 
+  /* ── Click on background resets inspector ── */
+  svg.on('click', function(e) {
+    if (e.target === svg.node()) showArchSummary();
+  });
+
   /* ── Filter listeners ── */
   document.getElementById('radLabels')?.addEventListener('change', function() {
     labelG.style('display', this.checked ? null : 'none');
   });
   document.getElementById('radEdges')?.addEventListener('change', function() {
     edgeG.style('display', this.checked ? null : 'none');
+    edgeHitG.style('display', this.checked ? null : 'none');
   });
   document.getElementById('radRings')?.addEventListener('change', function() {
     ringsG.style('display', this.checked ? null : 'none');
   });
   filters.querySelectorAll('.layer-filter').forEach(cb => {
     cb.addEventListener('change', () => {
-      const hidden = new Set();
+      const hiddenLayers = new Set();
       filters.querySelectorAll('.layer-filter').forEach(el => {
-        if (!el.checked) hidden.add(el.dataset.layer);
+        if (!el.checked) hiddenLayers.add(el.dataset.layer);
       });
       nodeG.selectAll('.rad-node').style('display', function() {
-        return hidden.has(d3.select(this).attr('data-layer')) ? 'none' : null;
+        return hiddenLayers.has(d3.select(this).attr('data-layer')) ? 'none' : null;
       });
       labelG.selectAll('text').style('display', function() {
         const id = d3.select(this).attr('data-id');
         const n = nodeById.get(id);
-        return (n && hidden.has(n.layer)) ? 'none' : null;
+        return (n && hiddenLayers.has(n.layer)) ? 'none' : null;
       });
       edgeG.selectAll('path').style('display', function() {
         const s = nodeById.get(d3.select(this).attr('data-source'));
         const t = nodeById.get(d3.select(this).attr('data-target'));
-        return (s && hidden.has(s.layer)) || (t && hidden.has(t.layer)) ? 'none' : null;
+        return (s && hiddenLayers.has(s.layer)) || (t && hiddenLayers.has(t.layer)) ? 'none' : null;
       });
+      edgeHitG.selectAll('path').style('display', function() {
+        const s = nodeById.get(d3.select(this).attr('data-source'));
+        const t = nodeById.get(d3.select(this).attr('data-target'));
+        return (s && hiddenLayers.has(s.layer)) || (t && hiddenLayers.has(t.layer)) ? 'none' : null;
+      });
+    });
+  });
+
+  /* ── Node sizing dropdown ── */
+  document.getElementById('radSizeMetric')?.addEventListener('change', function() {
+    currentSizeMetric = this.value;
+    nodeG.selectAll('.rad-node').each(function() {
+      const el = d3.select(this);
+      const id = el.attr('data-id');
+      const n = nodeById.get(id);
+      if (!n) return;
+      const sz = nodeSize(n, currentSizeMetric);
+      el.select('.node-glow').transition().duration(400).ease(d3.easeCubicOut).attr('r', sz + 3);
+      el.select('.node-main').transition().duration(400).ease(d3.easeCubicOut).attr('r', sz);
+      if (n.isEntryPoint) el.select('.node-ep').transition().duration(400).ease(d3.easeCubicOut).attr('r', sz + 5);
+      if (n.isHotspot) el.select('.node-hotspot').transition().duration(400).ease(d3.easeCubicOut).attr('r', sz + 2);
+    });
+    labelG.selectAll('text').each(function() {
+      const el = d3.select(this);
+      const id = el.attr('data-id');
+      const n = nodeById.get(id);
+      if (!n) return;
+      const p = positions.get(id);
+      if (!p) return;
+      const sz = nodeSize(n, currentSizeMetric);
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      const off = sz + 5;
+      el.transition().duration(400).ease(d3.easeCubicOut)
+        .attr('x', p.x + (dx/dist) * off)
+        .attr('y', p.y + (dy/dist) * off + 3);
+    });
+  });
+
+  /* ── Module checklist ── */
+  checklistEl.querySelectorAll('.mod-check').forEach(cb => {
+    cb.addEventListener('change', function() {
+      const id = this.dataset.id;
+      if (this.checked) {
+        hiddenModules.delete(id);
+      } else {
+        hiddenModules.add(id);
+      }
+      reLayout();
     });
   });
 }

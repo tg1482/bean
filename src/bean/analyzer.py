@@ -756,17 +756,22 @@ def to_bean_data(result: AnalysisResult) -> dict[str, Any]:
             "parent": f"layer:{layer}",
             "kind": "module",
             "isEntryPoint": m.id in ep_module_ids,
+            "lineCount": m.line_count,
         })
 
     # Build galaxy edges from import edges (aggregated per module pair)
-    edge_counts: dict[tuple[str, str], int] = {}
+    edge_agg: dict[tuple[str, str], dict] = {}
     for e in import_edges:
         key = (f"module:{e.source}", f"module:{e.target}")
-        edge_counts[key] = edge_counts.get(key, 0) + 1
+        if key not in edge_agg:
+            edge_agg[key] = {"count": 0, "names": []}
+        edge_agg[key]["count"] += 1
+        edge_agg[key]["names"].extend(e.names)
 
     galaxy_edges = [
-        {"source": s, "target": t, "count": c, "confidenceCounts": {}}
-        for (s, t), c in edge_counts.items()
+        {"source": s, "target": t, "count": agg["count"],
+         "names": sorted(set(agg["names"])), "confidenceCounts": {}}
+        for (s, t), agg in edge_agg.items()
     ]
 
     # Entrypoint flow data
