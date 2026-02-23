@@ -1,7 +1,7 @@
 [project]
 name = "bean-viz"
 version = "0.0.1"
-description = "Codebase galaxy visualizer for Python projects"
+description = "Codebase visualizer for Python projects"
 requires-python = ">=3.10"
 dependencies = []
 

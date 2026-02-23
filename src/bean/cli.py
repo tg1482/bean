@@ -1,4 +1,4 @@
-"""Bean CLI — analyze any Python codebase and generate a galaxy visualization."""
+"""Bean CLI — analyze any Python codebase and generate a visualization."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from bean.render import download_d3, render_html
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="bean",
-        description="Codebase galaxy visualizer for Python projects",
+        description="Codebase visualizer for Python projects",
     )
     parser.add_argument(
         "path",
@@ -48,7 +48,7 @@ def main() -> None:
 
     output = Path(args.output) if args.output else Path.cwd() / "bean.html"
 
-    print(f"Bean v{__version__} — Codebase Galaxy Visualizer")
+    print(f"Bean v{__version__} — Codebase Visualizer")
     print(f"  Analyzing {root} ...")
 
     result = analyze(root)

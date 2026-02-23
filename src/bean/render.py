@@ -35,7 +35,7 @@ def render_html(data: dict[str, Any], d3_js: str) -> str:
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Bean — Codebase Galaxy</title>
+<title>Bean — Codebase Visualizer</title>
 <style>
 {CSS}
 </style>
@@ -46,11 +46,9 @@ def render_html(data: dict[str, Any], d3_js: str) -> str:
     <div class="header-left">
       <span class="logo">&#9733; Bean</span>
       <nav class="view-tabs" id="viewTabs">
-        <button class="tab active" data-view="galaxy">Galaxy</button>
-        <button class="tab" data-view="treemap">Treemap</button>
-<button class="tab" data-view="trace">Trace</button>
+        <button class="tab active" data-view="data">Data</button>
+        <button class="tab" data-view="trace">Trace</button>
         <button class="tab" data-view="quality">Quality</button>
-        <button class="tab" data-view="data">Data</button>
       </nav>
     </div>
     <div class="header-right">
@@ -276,8 +274,7 @@ const LAYER_LABELS = {};
 LAYERS.forEach(l => { LAYER_LABELS[l] = l.charAt(0).toUpperCase() + l.slice(1); });
 
 /* ── State ── */
-let currentView = 'galaxy';
-let galaxyState = {nodes:[], edges:[], sim:null, zoom:null, drillStack:[], hoveredNode:null, selectedNode:null};
+let currentView = 'data';
 let particleCtx = null;
 let particles = [];
 let animFrame = null;
@@ -294,7 +291,7 @@ function init() {
   setupTabs();
   setupSearch();
   setupParticles();
-  switchView('galaxy');
+  switchView('data');
   // Load-in reveal
   document.getElementById('app').style.opacity = '0';
   requestAnimationFrame(() => {
@@ -330,18 +327,15 @@ function switchView(view) {
   document.getElementById('breadcrumbs').innerHTML = '';
   document.getElementById('tooltip').classList.add('hidden');
   document.getElementById('searchResults').classList.add('hidden');
-  if (galaxyState.sim) { galaxyState.sim.stop(); galaxyState.sim = null; }
   cancelAnimationFrame(animFrame);
 
   // Add SVG defs
   addSvgDefs(svg);
 
   switch(view) {
-    case 'galaxy': renderGalaxy(); break;
-    case 'treemap': renderTreemap(); break;
-case 'trace': renderTrace(); break;
-    case 'quality': renderQuality(); break;
     case 'data': renderDataFlow(); break;
+    case 'trace': renderTrace(); break;
+    case 'quality': renderQuality(); break;
   }
 }
 
@@ -443,26 +437,10 @@ function setupSearch() {
         const id = el.dataset.id;
         results.classList.add('hidden');
         input.value = '';
-        highlightNode(id);
       });
     });
   });
   input.addEventListener('blur', () => setTimeout(() => results.classList.add('hidden'), 200));
-}
-
-function highlightNode(id) {
-  if (currentView === 'galaxy') {
-    const node = galaxyState.nodes.find(n => n.id === id || n.label === id);
-    if (node) {
-      galaxyState.selectedNode = node;
-      renderInspector(node);
-      // Center on node
-      const svg = d3.select('#mainSvg');
-      const w = svg.node().clientWidth, h = svg.node().clientHeight;
-      const transform = d3.zoomIdentity.translate(w/2 - node.x*1.5, h/2 - node.y*1.5).scale(1.5);
-      svg.transition().duration(800).call(galaxyState.zoom.transform, transform);
-    }
-  }
 }
 
 /* ── Sidebar ── */
@@ -477,580 +455,6 @@ function renderLayerLegend() {
       <span class="legend-count">${counts[l]||0}</span>
     </div>`
   ).join('');
-}
-
-function renderFilterControls() {
-  const el = document.getElementById('filterControls');
-  el.innerHTML = `
-    <h3>Display</h3>
-    <div class="filter-toggle"><input type="checkbox" id="showEdges" checked/><label for="showEdges">Show edges</label></div>
-    <div class="filter-toggle"><input type="checkbox" id="showLabels" checked/><label for="showLabels">Show labels</label></div>
-    <div class="filter-toggle"><input type="checkbox" id="showBeacons" checked/><label for="showBeacons">Entry point beacons</label></div>
-    <div class="filter-toggle"><input type="checkbox" id="highlightHotspots" checked/><label for="highlightHotspots">Hotspot glow</label></div>
-  `;
-  ['showEdges','showLabels','showBeacons','highlightHotspots'].forEach(id => {
-    document.getElementById(id).addEventListener('change', () => updateGalaxyVisibility());
-  });
-}
-
-function updateGalaxyVisibility() {
-  const svg = d3.select('#mainSvg');
-  const showEdges = document.getElementById('showEdges')?.checked ?? true;
-  const showLabels = document.getElementById('showLabels')?.checked ?? true;
-  const showBeacons = document.getElementById('showBeacons')?.checked ?? true;
-  svg.selectAll('.galaxy-edge').style('display', showEdges ? null : 'none');
-  svg.selectAll('.galaxy-label').style('display', showLabels ? null : 'none');
-  svg.selectAll('.beacon-ring').style('display', showBeacons ? null : 'none');
-}
-
-function renderInspector(node) {
-  const el = document.getElementById('inspector');
-  if (!node) {
-    el.innerHTML = '<h3>Inspector</h3><div style="color:var(--text3);font-size:12px">Click a node to inspect</div>';
-    return;
-  }
-  const rows = [
-    ['Layer', node.layer],
-    ['Complexity', node.complexity || node.complexity_sum || '-'],
-    ['Functions', node.symbolCount || node.nFunctions || '-'],
-    ['Classes', node.nClasses || '-'],
-    ['Imports', node.nImports || '-'],
-    ['Entry Point', node.isEntryPoint ? 'Yes' : 'No'],
-    ['Hotspot', node.isHotspot ? 'Yes' : 'No'],
-  ];
-  if (node.path) rows.push(['Path', node.path]);
-  el.innerHTML = `
-    <h3>Inspector</h3>
-    <div class="inspector-title" style="color:${layerColor(node.layer)}">${node.label || node.id}</div>
-    ${rows.map(([l,v]) => `<div class="inspector-row"><span class="label">${l}</span><span class="value">${v}</span></div>`).join('')}
-  `;
-}
-
-/* ══════════════════════════════════════════════════════════
-   VIEW 1: Galaxy
-   ══════════════════════════════════════════════════════════ */
-function renderGalaxy() {
-  renderLayerLegend();
-  renderFilterControls();
-  renderInspector(null);
-
-  const svg = d3.select('#mainSvg');
-  const width = svg.node().clientWidth;
-  const height = svg.node().clientHeight;
-
-  const nodes = D.galaxyNodes.map(n => ({...n, x: undefined, y: undefined}));
-  const nodeMap = new Map(nodes.map(n => [n.id, n]));
-
-  const edges = D.galaxyEdges.filter(e => nodeMap.has(e.source) && nodeMap.has(e.target))
-    .map(e => ({...e, source: e.source, target: e.target}));
-
-  galaxyState.nodes = nodes;
-  galaxyState.edges = edges;
-  galaxyState.drillStack = [];
-
-  // Layer gravity wells
-  const layerAngle = {};
-  const layerRadius = {};
-  LAYERS.forEach((l,i) => {
-    layerAngle[l] = (i / LAYERS.length) * Math.PI * 2 - Math.PI/2;
-    layerRadius[l] = Math.min(width, height) * 0.28;
-  });
-
-  const maxComplexity = Math.max(1, ...nodes.map(n => n.complexity||1));
-  const rScale = d3.scaleSqrt().domain([0, maxComplexity]).range([4, 28]);
-
-  // Force simulation
-  const sim = d3.forceSimulation(nodes)
-    .force('charge', d3.forceManyBody().strength(-60))
-    .force('center', d3.forceCenter(width/2, height/2).strength(0.05))
-    .force('collision', d3.forceCollide(d => rScale(d.complexity||1) + 3))
-    .force('link', d3.forceLink(edges).id(d => d.id).distance(80).strength(0.15))
-    .force('layerX', d3.forceX(d => {
-      const a = layerAngle[d.layer] || 0;
-      const r = layerRadius[d.layer] || 200;
-      return width/2 + Math.cos(a) * r;
-    }).strength(0.3))
-    .force('layerY', d3.forceY(d => {
-      const a = layerAngle[d.layer] || 0;
-      const r = layerRadius[d.layer] || 200;
-      return height/2 + Math.sin(a) * r;
-    }).strength(0.3))
-    .alphaDecay(0.02)
-    .velocityDecay(0.4);
-
-  galaxyState.sim = sim;
-
-  // Zoom
-  const g = svg.append('g').attr('class','galaxy-root');
-  const zoom = d3.zoom()
-    .scaleExtent([0.2, 5])
-    .on('zoom', (e) => g.attr('transform', e.transform));
-  svg.call(zoom);
-  galaxyState.zoom = zoom;
-
-  // Edges
-  const edgeG = g.append('g').attr('class','edges-group');
-  const edgeEls = edgeG.selectAll('path')
-    .data(edges)
-    .join('path')
-    .attr('class','galaxy-edge')
-    .attr('fill','none')
-    .attr('stroke','rgba(148,163,184,0.12)')
-    .attr('stroke-width', d => clamp(Math.log2((d.count||1)+1)*0.6, 0.5, 3));
-
-  // Beacon group (behind nodes)
-  const beaconG = g.append('g').attr('class','beacon-group');
-  const epNodes = nodes.filter(n => n.isEntryPoint);
-  const beacons = beaconG.selectAll('circle')
-    .data(epNodes)
-    .join('circle')
-    .attr('class','beacon-ring')
-    .attr('r', 0)
-    .attr('fill','none')
-    .attr('stroke','var(--gold)')
-    .attr('stroke-width', 1.5)
-    .attr('opacity', 0);
-
-  // Animate beacons
-  function pulseBeacons() {
-    beacons
-      .attr('r', 0)
-      .attr('opacity', 0.7)
-      .transition().duration(2000).ease(d3.easeQuadOut)
-      .attr('r', 28)
-      .attr('opacity', 0)
-      .on('end', function() { if (currentView === 'galaxy') pulseBeacons(); });
-  }
-  setTimeout(pulseBeacons, 1500);
-
-  // Nodes
-  const nodeG = g.append('g').attr('class','nodes-group');
-  const nodeEls = nodeG.selectAll('circle')
-    .data(nodes)
-    .join('circle')
-    .attr('class', d => {
-      let c = 'galaxy-node glow-node';
-      if (d.isHotspot) c += ' hotspot-node';
-      return c;
-    })
-    .attr('r', d => rScale(d.complexity||1))
-    .attr('fill', d => `url(#grad-${d.layer})`)
-    .attr('stroke', d => d3.color(layerColor(d.layer)).brighter(0.5))
-    .attr('stroke-width', 0.5)
-    .attr('cursor','pointer')
-    .style('opacity', 0);
-
-  // Pop-in animation
-  nodeEls.transition()
-    .delay((d,i) => 300 + i * 15)
-    .duration(500)
-    .style('opacity', 1);
-
-  // Labels
-  const labelG = g.append('g').attr('class','labels-group');
-  const labelEls = labelG.selectAll('text')
-    .data(nodes)
-    .join('text')
-    .attr('class','galaxy-label')
-    .text(d => shortLabel(d.label))
-    .attr('font-size', d => d.complexity > maxComplexity*0.3 ? 11 : 9)
-    .attr('fill','var(--text2)')
-    .attr('pointer-events','none')
-    .attr('paint-order','stroke')
-    .attr('stroke','var(--bg)')
-    .attr('stroke-width', 2.5)
-    .attr('stroke-linejoin','round')
-    .style('opacity', 0);
-
-  labelEls.transition().delay((d,i) => 600 + i * 15).duration(400).style('opacity', 1);
-
-  // Tick
-  sim.on('tick', () => {
-    edgeEls.attr('d', d => {
-      const sx = d.source.x, sy = d.source.y, tx = d.target.x, ty = d.target.y;
-      const mx = (sx+tx)/2, my = (sy+ty)/2 - 15;
-      return `M${sx},${sy} Q${mx},${my} ${tx},${ty}`;
-    });
-    nodeEls.attr('cx', d => d.x).attr('cy', d => d.y);
-    labelEls.attr('x', d => d.x + rScale(d.complexity||1) + 4).attr('y', d => d.y - rScale(d.complexity||1) - 2);
-    beacons.attr('cx', d => d.x).attr('cy', d => d.y);
-  });
-
-  // Drag
-  const drag = d3.drag()
-    .on('start', (e,d) => { if (!e.active) sim.alphaTarget(0.2).restart(); d.fx = d.x; d.fy = d.y; })
-    .on('drag', (e,d) => { d.fx = e.x; d.fy = e.y; })
-    .on('end', (e,d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; });
-  nodeEls.call(drag);
-
-  // Hover
-  const tooltip = document.getElementById('tooltip');
-  nodeEls.on('mouseenter', (e, d) => {
-    galaxyState.hoveredNode = d;
-    // Brighten connected edges
-    edgeEls.attr('stroke', ed => {
-      const sid = typeof ed.source === 'object' ? ed.source.id : ed.source;
-      const tid = typeof ed.target === 'object' ? ed.target.id : ed.target;
-      if (sid === d.id || tid === d.id) return 'rgba(148,163,184,0.6)';
-      return 'rgba(148,163,184,0.06)';
-    }).attr('stroke-width', ed => {
-      const sid = typeof ed.source === 'object' ? ed.source.id : ed.source;
-      const tid = typeof ed.target === 'object' ? ed.target.id : ed.target;
-      if (sid === d.id || tid === d.id) return clamp(Math.log2((ed.count||1)+1)*0.8, 1, 4);
-      return clamp(Math.log2((ed.count||1)+1)*0.4, 0.3, 2);
-    });
-    // Scale up node
-    d3.select(e.target).transition().duration(200).attr('r', rScale(d.complexity||1)*1.3);
-    // Dim unconnected
-    const connected = new Set([d.id]);
-    edges.forEach(ed => {
-      const sid = typeof ed.source === 'object' ? ed.source.id : ed.source;
-      const tid = typeof ed.target === 'object' ? ed.target.id : ed.target;
-      if (sid === d.id) connected.add(tid);
-      if (tid === d.id) connected.add(sid);
-    });
-    nodeEls.style('opacity', n => connected.has(n.id) ? 1 : 0.25);
-    labelEls.style('opacity', n => connected.has(n.id) ? 1 : 0.1);
-    // Tooltip
-    tooltip.classList.remove('hidden');
-    tooltip.innerHTML = `
-      <div class="tt-title" style="color:${layerColor(d.layer)}">${d.label}</div>
-      <div class="tt-row">Layer: ${d.layer} · Complexity: ${d.complexity||0}</div>
-      <div class="tt-row">Functions: ${d.symbolCount||d.nFunctions||0} · Classes: ${d.nClasses||0}</div>
-      ${d.isEntryPoint ? '<div class="tt-row" style="color:var(--gold)">Entry Point</div>' : ''}
-      ${d.isHotspot ? '<div class="tt-row" style="color:#f97316">Hotspot</div>' : ''}
-      <div class="tt-row" style="color:var(--text3)">Click to inspect · Double-click to drill</div>
-    `;
-    tooltip.style.left = (e.clientX + 16) + 'px';
-    tooltip.style.top = (e.clientY - 10) + 'px';
-    tooltip.style.pointerEvents = 'none';
-  })
-  .on('mousemove', (e) => {
-    tooltip.style.left = (e.clientX + 16) + 'px';
-    tooltip.style.top = (e.clientY - 10) + 'px';
-  })
-  .on('mouseleave', (e, d) => {
-    galaxyState.hoveredNode = null;
-    edgeEls.attr('stroke','rgba(148,163,184,0.12)')
-      .attr('stroke-width', ed => clamp(Math.log2((ed.count||1)+1)*0.6, 0.5, 3));
-    d3.select(e.target).transition().duration(200).attr('r', rScale(d.complexity||1));
-    nodeEls.style('opacity', 1);
-    labelEls.style('opacity', 1);
-    tooltip.classList.add('hidden');
-  })
-  .on('click', (e, d) => {
-    galaxyState.selectedNode = d;
-    renderInspector(d);
-  })
-  .on('dblclick', (e, d) => {
-    e.stopPropagation();
-    drillIntoModule(d, g, rScale, zoom, svg);
-  });
-}
-
-function drillIntoModule(moduleNode, galaxyG, rScale, zoom, svg) {
-  // Find classes and functions in this module
-  const modLabel = moduleNode.label;
-  const modId = moduleNode.id;
-  const symbolLevel = D.drillLevels.symbol || {};
-  const symbols = (symbolLevel.nodes || []).filter(s => s.parent === modId);
-  const symEdges = (symbolLevel.edges || []).filter(e => {
-    const sids = new Set(symbols.map(s => s.id));
-    return sids.has(e.source) && sids.has(e.target);
-  });
-
-  if (!symbols.length) return;
-
-  galaxyState.drillStack.push(modLabel);
-  renderBreadcrumbs();
-
-  // Animate: zoom into module position, then show symbols
-  const width = svg.node().clientWidth;
-  const height = svg.node().clientHeight;
-
-  // Transition galaxy out
-  galaxyG.transition().duration(600).style('opacity', 0.1);
-
-  // Create drill layer
-  const drillG = svg.append('g').attr('class','drill-root');
-  svg.call(zoom.transform, d3.zoomIdentity);
-  const drillZoom = d3.zoom().scaleExtent([0.3,5]).on('zoom', e => drillG.attr('transform', e.transform));
-  svg.call(drillZoom);
-
-  const maxC = Math.max(1, ...symbols.map(s => s.complexity||1));
-  const sScale = d3.scaleSqrt().domain([0, maxC]).range([5, 22]);
-
-  // Classes from D.classes for this module
-  const modClasses = D.classes.filter(c => c.module === modLabel);
-  const classIds = new Set(modClasses.map(c => c.id));
-
-  const drillSim = d3.forceSimulation(symbols)
-    .force('charge', d3.forceManyBody().strength(-40))
-    .force('center', d3.forceCenter(width/2, height/2))
-    .force('collision', d3.forceCollide(d => sScale(d.complexity||1) + 4))
-    .force('link', d3.forceLink(symEdges.map(e=>({...e}))).id(d=>d.id).distance(60).strength(0.2))
-    .alphaDecay(0.03);
-
-  // Edges
-  const dEdges = drillG.append('g').selectAll('path').data(symEdges)
-    .join('path').attr('fill','none').attr('stroke','rgba(148,163,184,0.15)')
-    .attr('stroke-width', 0.8);
-
-  // Nodes (diamonds for functions, hexagons for classes/methods)
-  const dNodes = drillG.append('g').selectAll('path').data(symbols)
-    .join('path')
-    .attr('fill', d => `url(#grad-${d.layer})`)
-    .attr('stroke', d => d3.color(layerColor(d.layer)).brighter(0.5))
-    .attr('stroke-width', 0.5)
-    .attr('class','glow-node')
-    .attr('cursor','pointer')
-    .style('opacity', 0);
-
-  dNodes.transition().delay((d,i) => i*20).duration(400).style('opacity',1);
-
-  function symbolPath(d) {
-    const r = sScale(d.complexity||1);
-    const lbl = d.label||d.id;
-    // Check if it's a class method or class
-    const isClass = classIds.has(lbl) || lbl.includes('.__init__');
-    if (isClass) {
-      // Hexagon
-      const pts = [];
-      for (let i=0;i<6;i++) { const a=Math.PI/3*i-Math.PI/6; pts.push([d.x+r*Math.cos(a), d.y+r*Math.sin(a)]); }
-      return 'M'+pts.map(p=>p.join(',')).join('L')+'Z';
-    }
-    // Diamond
-    return `M${d.x},${d.y-r} L${d.x+r},${d.y} L${d.x},${d.y+r} L${d.x-r},${d.y} Z`;
-  }
-
-  const dLabels = drillG.append('g').selectAll('text').data(symbols)
-    .join('text')
-    .text(d => { const l=d.label||d.id; const p=l.split('.'); return p[p.length-1]; })
-    .attr('font-size', 9)
-    .attr('fill','var(--text2)')
-    .attr('pointer-events','none')
-    .attr('paint-order','stroke')
-    .attr('stroke','var(--bg)')
-    .attr('stroke-width', 2)
-    .attr('stroke-linejoin','round')
-    .style('opacity', 0);
-
-  dLabels.transition().delay((d,i) => 200+i*20).duration(300).style('opacity',1);
-
-  drillSim.on('tick', () => {
-    dEdges.attr('d', d => {
-      const s=d.source, t=d.target;
-      return `M${s.x},${s.y} Q${(s.x+t.x)/2},${(s.y+t.y)/2-10} ${t.x},${t.y}`;
-    });
-    dNodes.attr('d', symbolPath);
-    dLabels.attr('x', d => d.x + sScale(d.complexity||1) + 3).attr('y', d => d.y - sScale(d.complexity||1) - 1);
-  });
-
-  // Hover for drill symbols
-  const tooltip = document.getElementById('tooltip');
-  dNodes.on('mouseenter', (e, d) => {
-    tooltip.classList.remove('hidden');
-    tooltip.innerHTML = `
-      <div class="tt-title" style="color:${layerColor(d.layer)}">${d.label||d.id}</div>
-      <div class="tt-row">Complexity: ${d.complexity||0} · Span: ${d.span||0} lines</div>
-      <div class="tt-row">Kind: ${d.kind||'symbol'}</div>
-    `;
-    tooltip.style.left = (e.clientX + 16) + 'px';
-    tooltip.style.top = (e.clientY - 10) + 'px';
-  })
-  .on('mousemove', (e) => {
-    tooltip.style.left = (e.clientX + 16) + 'px';
-    tooltip.style.top = (e.clientY - 10) + 'px';
-  })
-  .on('mouseleave', () => tooltip.classList.add('hidden'));
-
-  // Drag
-  const drillDrag = d3.drag()
-    .on('start', (e,d) => { if(!e.active) drillSim.alphaTarget(0.2).restart(); d.fx=d.x; d.fy=d.y; })
-    .on('drag', (e,d) => { d.fx=e.x; d.fy=e.y; })
-    .on('end', (e,d) => { if(!e.active) drillSim.alphaTarget(0); d.fx=null; d.fy=null; });
-  dNodes.call(drillDrag);
-}
-
-function renderBreadcrumbs() {
-  const el = document.getElementById('breadcrumbs');
-  const stack = ['Galaxy', ...galaxyState.drillStack];
-  el.innerHTML = stack.map((s,i) => {
-    const isCurrent = i === stack.length-1;
-    return `<span class="breadcrumb ${isCurrent?'current':''}" data-idx="${i}">${s}</span>`;
-  }).join(' <span style="color:var(--text3);pointer-events:auto">›</span> ');
-  el.querySelectorAll('.breadcrumb').forEach(bc => {
-    bc.addEventListener('click', () => {
-      const idx = parseInt(bc.dataset.idx);
-      if (idx === 0) {
-        galaxyState.drillStack = [];
-        switchView('galaxy');
-      }
-    });
-  });
-}
-
-/* ══════════════════════════════════════════════════════════
-   VIEW 2: Treemap
-   ══════════════════════════════════════════════════════════ */
-function renderTreemap() {
-  const sidebar = document.getElementById('sidebar');
-  sidebar.querySelector('#layerLegend').innerHTML = '';
-  sidebar.querySelector('#filterControls').innerHTML = '';
-  renderLayerLegend();
-  renderInspector(null);
-
-  const svg = d3.select('#mainSvg');
-  const width = svg.node().clientWidth;
-  const height = svg.node().clientHeight;
-
-  const g = svg.append('g').attr('class','treemap-root');
-
-  let currentRoot = D.treemap;
-  let drillPath = [];
-
-  function renderLevel(root) {
-    g.selectAll('*').remove();
-    const hierarchy = d3.hierarchy(root)
-      .sum(d => d.value || 0)
-      .sort((a,b) => (b.value||0) - (a.value||0));
-
-    const treemap = d3.treemap()
-      .size([width, height])
-      .paddingTop(22)
-      .paddingRight(2)
-      .paddingBottom(2)
-      .paddingLeft(2)
-      .round(true);
-
-    treemap(hierarchy);
-
-    const maxC = Math.max(1, ...hierarchy.leaves().map(d => d.data.complexity||0));
-    const colorScale = d3.scaleSequential(d3.interpolateRgbBasis(['#10b981','#fbbf24','#ef4444']))
-      .domain([0, maxC]);
-
-    // Cells
-    const cell = g.selectAll('g').data(hierarchy.children || []).join('g');
-
-    cell.append('rect')
-      .attr('x', d => d.x0)
-      .attr('y', d => d.y0)
-      .attr('width', d => Math.max(0, d.x1 - d.x0))
-      .attr('height', d => Math.max(0, d.y1 - d.y0))
-      .attr('fill', d => {
-        if (d.data.layer) return d3.color(layerColor(d.data.layer)).darker(0.8);
-        return 'var(--bg3)';
-      })
-      .attr('stroke', 'var(--bg)')
-      .attr('stroke-width', 1)
-      .attr('rx', 3)
-      .attr('cursor', d => d.children ? 'pointer' : 'default')
-      .style('opacity', 0)
-      .transition().duration(600).delay((d,i) => i*30).style('opacity', 1);
-
-    // Inner cells for leaves within groups
-    const leaves = [];
-    (hierarchy.children || []).forEach(child => {
-      if (child.children) {
-        child.children.forEach(leaf => leaves.push(leaf));
-      }
-    });
-
-    const leafCells = g.selectAll('.leaf-cell').data(leaves).join('rect')
-      .attr('class','leaf-cell')
-      .attr('x', d => d.x0)
-      .attr('y', d => d.y0)
-      .attr('width', d => Math.max(0, d.x1 - d.x0))
-      .attr('height', d => Math.max(0, d.y1 - d.y0))
-      .attr('fill', d => {
-        const c = d.data.complexity || 0;
-        return colorScale(c);
-      })
-      .attr('fill-opacity', 0.6)
-      .attr('stroke', 'var(--bg)')
-      .attr('stroke-width', 0.5)
-      .attr('rx', 2)
-      .attr('cursor', d => d.children ? 'pointer' : 'default');
-
-    // Group labels
-    cell.append('text')
-      .attr('x', d => d.x0 + 6)
-      .attr('y', d => d.y0 + 15)
-      .text(d => d.data.name)
-      .attr('font-size', 11)
-      .attr('font-weight', 600)
-      .attr('fill', d => layerColor(d.data.layer||'other'))
-      .attr('pointer-events','none');
-
-    // Leaf labels
-    g.selectAll('.leaf-label').data(leaves.filter(d => (d.x1-d.x0) > 50 && (d.y1-d.y0) > 18)).join('text')
-      .attr('class','leaf-label')
-      .attr('x', d => d.x0 + 4)
-      .attr('y', d => d.y0 + 13)
-      .text(d => { const n=d.data.name; return n.length > Math.floor((d.x1-d.x0)/6) ? n.slice(0,Math.floor((d.x1-d.x0)/6)-2)+'..' : n; })
-      .attr('font-size', 10)
-      .attr('fill','var(--text)')
-      .attr('pointer-events','none');
-
-    // Hover
-    const tooltip = document.getElementById('tooltip');
-    function addHover(sel) {
-      sel.on('mouseenter', (e,d) => {
-        tooltip.classList.remove('hidden');
-        tooltip.innerHTML = `
-          <div class="tt-title" style="color:${layerColor(d.data.layer||'other')}">${d.data.name}</div>
-          <div class="tt-row">Complexity: ${d.data.complexity||0}</div>
-          <div class="tt-row">Size: ${d.value||0} lines</div>
-          ${d.children ? '<div class="tt-row" style="color:var(--text3)">Click to drill down</div>' : ''}
-        `;
-        tooltip.style.left = (e.clientX+16)+'px';
-        tooltip.style.top = (e.clientY-10)+'px';
-      })
-      .on('mousemove', e => { tooltip.style.left=(e.clientX+16)+'px'; tooltip.style.top=(e.clientY-10)+'px'; })
-      .on('mouseleave', () => tooltip.classList.add('hidden'));
-    }
-    addHover(cell.select('rect'));
-    addHover(leafCells);
-
-    // Click to drill
-    cell.select('rect').on('click', (e, d) => {
-      if (!d.children) return;
-      drillPath.push(currentRoot);
-      currentRoot = d.data;
-      renderLevel(currentRoot);
-      renderTreeBreadcrumbs();
-    });
-    leafCells.on('click', (e, d) => {
-      if (!d.children) return;
-      drillPath.push(currentRoot);
-      currentRoot = d.data;
-      renderLevel(currentRoot);
-      renderTreeBreadcrumbs();
-    });
-  }
-
-  function renderTreeBreadcrumbs() {
-    const el = document.getElementById('breadcrumbs');
-    const path = drillPath.map(d => d.name || 'root').concat([currentRoot.name || 'root']);
-    el.innerHTML = path.map((s,i) => {
-      const isCurrent = i === path.length-1;
-      return `<span class="breadcrumb ${isCurrent?'current':''}" data-idx="${i}">${s}</span>`;
-    }).join(' <span style="color:var(--text3);pointer-events:auto">›</span> ');
-    el.querySelectorAll('.breadcrumb').forEach(bc => {
-      bc.addEventListener('click', () => {
-        const idx = parseInt(bc.dataset.idx);
-        if (idx < drillPath.length) {
-          currentRoot = drillPath[idx];
-          drillPath = drillPath.slice(0, idx);
-          renderLevel(currentRoot);
-          renderTreeBreadcrumbs();
-        }
-      });
-    });
-  }
-
-  renderLevel(currentRoot);
-  renderTreeBreadcrumbs();
 }
 
 /* ══════════════════════════════════════════════════════════
