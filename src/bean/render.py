@@ -50,6 +50,7 @@ def render_html(data: dict[str, Any], d3_js: str) -> str:
         <button class="tab" data-view="treemap">Treemap</button>
 <button class="tab" data-view="trace">Trace</button>
         <button class="tab" data-view="quality">Quality</button>
+        <button class="tab" data-view="data">Data</button>
       </nav>
     </div>
     <div class="header-right">
@@ -239,6 +240,13 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 ::-webkit-scrollbar-track{background:var(--bg2)}
 ::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,0.3)}
+
+/* Data flow view */
+.type-card{cursor:pointer;transition:filter 0.2s}
+.type-card:hover{filter:brightness(1.3)}
+.type-field-row{font-size:10px;fill:var(--text2)}
+.type-field-type{fill:var(--text3);font-style:italic}
+.type-kind-badge{font-size:8px;text-transform:uppercase;letter-spacing:0.05em}
 """
 
 
@@ -333,6 +341,7 @@ function switchView(view) {
     case 'treemap': renderTreemap(); break;
 case 'trace': renderTrace(); break;
     case 'quality': renderQuality(); break;
+    case 'data': renderDataFlow(); break;
   }
 }
 
@@ -1709,6 +1718,374 @@ function renderQuality() {
       g.select(map[id]).style('display', el.checked ? null : 'none');
     });
   });
+}
+
+/* ══════════════════════════════════════════════════════════
+   VIEW 6: Data Flow — types, fields, transformations
+   ══════════════════════════════════════════════════════════ */
+function renderDataFlow() {
+  const sidebar = document.getElementById('sidebar');
+  const legend = sidebar.querySelector('#layerLegend');
+  const filters = sidebar.querySelector('#filterControls');
+  const inspector = sidebar.querySelector('#inspector');
+
+  renderLayerLegend();
+
+  const dataTypes = D.dataTypes || [];
+  const transforms = D.typeTransformations || [];
+
+  if (!dataTypes.length) {
+    inspector.innerHTML = '<h3>Data</h3><div style="color:var(--text3);font-size:12px">No data types found (dataclasses, Pydantic models, etc.)</div>';
+    filters.innerHTML = '';
+    return;
+  }
+
+  // Kind filter
+  const kinds = [...new Set(dataTypes.map(dt => dt.kind))].sort();
+  filters.innerHTML = `
+    <h3>Type Kind</h3>
+    ${kinds.map(k => `<div class="filter-toggle"><input type="checkbox" id="dtk-${k}" checked/><label for="dtk-${k}">${k}</label></div>`).join('')}
+    <h3 style="margin-top:8px">Display</h3>
+    <div class="filter-toggle"><input type="checkbox" id="dtShowFields" checked/><label for="dtShowFields">Show fields</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="dtShowEdges" checked/><label for="dtShowEdges">Show transformations</label></div>
+  `;
+
+  inspector.innerHTML = `
+    <h3>Data Types</h3>
+    <div class="inspector-row"><span class="label">Types</span><span class="value">${dataTypes.length}</span></div>
+    <div class="inspector-row"><span class="label">Transformations</span><span class="value">${transforms.length}</span></div>
+    <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click a type to inspect</div>
+  `;
+
+  const svg = d3.select('#mainSvg');
+  const width = svg.node().clientWidth;
+  const height = svg.node().clientHeight;
+  const g = svg.append('g').attr('class','dataflow-root');
+
+  const zoom = d3.zoom().scaleExtent([0.1, 4]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoom);
+
+  // Card dimensions
+  const cardW = 200;
+  const fieldH = 16;
+  const headerH = 32;
+  const kindBadgeH = 14;
+  const cardPadding = 8;
+
+  function cardHeight(dt) {
+    return headerH + kindBadgeH + dt.fields.length * fieldH + cardPadding * 2;
+  }
+
+  // Build type name → data type lookup
+  const typeByName = new Map();
+  dataTypes.forEach(dt => typeByName.set(dt.name, dt));
+
+  // Layout: group by layer, arrange in columns
+  const layerGroups = {};
+  dataTypes.forEach(dt => {
+    const l = dt.layer || 'other';
+    (layerGroups[l] = layerGroups[l] || []).push(dt);
+  });
+
+  const layerOrder = LAYERS.filter(l => layerGroups[l]);
+  // Add any layers not in LAYERS
+  Object.keys(layerGroups).forEach(l => {
+    if (!layerOrder.includes(l)) layerOrder.push(l);
+  });
+
+  const colSpacing = cardW + 60;
+  const rowSpacing = 20;
+  const startX = 40;
+  const startY = 40;
+
+  const positions = new Map(); // dt.id → {x, y, h}
+
+  layerOrder.forEach((layer, li) => {
+    const types = layerGroups[layer] || [];
+    // Sort by kind then name
+    types.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+    let y = startY;
+    types.forEach(dt => {
+      const h = cardHeight(dt);
+      positions.set(dt.id, { x: startX + li * colSpacing, y: y, h: h, layer: layer });
+      y += h + rowSpacing;
+    });
+  });
+
+  // Auto-fit
+  const maxX = startX + layerOrder.length * colSpacing;
+  const maxY = Math.max(...[...positions.values()].map(p => p.y + p.h), height);
+  const scaleX = width / (maxX + 40);
+  const scaleY = height / (maxY + 40);
+  const autoScale = Math.min(scaleX, scaleY, 1);
+  const tx = Math.max(10, (width - maxX * autoScale) / 2);
+  svg.call(zoom.transform, d3.zoomIdentity.translate(tx, 10).scale(autoScale));
+
+  // Column headers (layer names)
+  layerOrder.forEach((layer, li) => {
+    g.append('text')
+      .attr('x', startX + li * colSpacing + cardW / 2)
+      .attr('y', startY - 16)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 13)
+      .attr('font-weight', 700)
+      .attr('fill', layerColor(layer))
+      .text(LAYER_LABELS[layer] || layer);
+  });
+
+  // Draw transformation edges
+  const edgeG = g.append('g').attr('class', 'transform-edges');
+  const edgeData = transforms.filter(t => typeByName.has(t.sourceType) && typeByName.has(t.targetType));
+
+  const edgeEls = edgeG.selectAll('path').data(edgeData).join('path')
+    .attr('d', d => {
+      const src = typeByName.get(d.sourceType);
+      const tgt = typeByName.get(d.targetType);
+      if (!src || !tgt) return '';
+      const sp = positions.get(src.id);
+      const tp = positions.get(tgt.id);
+      if (!sp || !tp) return '';
+      const sx = sp.x + cardW;
+      const sy = sp.y + sp.h / 2;
+      const tx = tp.x;
+      const ty = tp.y + tp.h / 2;
+      // If same column or going backwards, curve more
+      const midX = (sx + tx) / 2;
+      return `M${sx},${sy} C${midX},${sy} ${midX},${ty} ${tx},${ty}`;
+    })
+    .attr('fill', 'none')
+    .attr('stroke', d => {
+      if (d.kind === 'endpoint') return 'var(--gold)';
+      return 'rgba(148,163,184,0.25)';
+    })
+    .attr('stroke-width', d => d.kind === 'endpoint' ? 2 : 1.2)
+    .attr('stroke-dasharray', d => d.kind === 'method' ? '4 3' : null)
+    .attr('marker-end', null);
+
+  // Draw arrowheads
+  const defs = svg.select('defs');
+  const arrowId = 'dataArrow';
+  defs.append('marker')
+    .attr('id', arrowId)
+    .attr('viewBox', '0 -3 6 6')
+    .attr('refX', 6).attr('refY', 0)
+    .attr('markerWidth', 6).attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-3L6,0L0,3').attr('fill', 'rgba(148,163,184,0.4)');
+
+  edgeEls.attr('marker-end', `url(#${arrowId})`);
+
+  // Edge labels (function name)
+  edgeG.selectAll('text').data(edgeData).join('text')
+    .attr('x', d => {
+      const src = typeByName.get(d.sourceType);
+      const tgt = typeByName.get(d.targetType);
+      if (!src || !tgt) return 0;
+      const sp = positions.get(src.id);
+      const tp = positions.get(tgt.id);
+      if (!sp || !tp) return 0;
+      return (sp.x + cardW + tp.x) / 2;
+    })
+    .attr('y', d => {
+      const src = typeByName.get(d.sourceType);
+      const tgt = typeByName.get(d.targetType);
+      if (!src || !tgt) return 0;
+      const sp = positions.get(src.id);
+      const tp = positions.get(tgt.id);
+      if (!sp || !tp) return 0;
+      return (sp.y + sp.h / 2 + tp.y + tp.h / 2) / 2 - 4;
+    })
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 8)
+    .attr('fill', d => d.kind === 'endpoint' ? 'var(--gold)' : 'var(--text3)')
+    .text(d => {
+      const parts = d.functionId.split(':');
+      const fn = parts[parts.length - 1];
+      return fn.length > 25 ? fn.slice(0, 23) + '..' : fn;
+    });
+
+  // Draw type cards
+  const cardG = g.append('g').attr('class', 'type-cards');
+  const tooltip = document.getElementById('tooltip');
+
+  dataTypes.forEach(dt => {
+    const pos = positions.get(dt.id);
+    if (!pos) return;
+    const h = cardHeight(dt);
+    const cg = cardG.append('g')
+      .attr('class', 'type-card')
+      .attr('transform', `translate(${pos.x},${pos.y})`);
+
+    // Card background
+    cg.append('rect')
+      .attr('width', cardW)
+      .attr('height', h)
+      .attr('rx', 6)
+      .attr('fill', 'var(--bg2)')
+      .attr('stroke', layerColor(dt.layer))
+      .attr('stroke-width', 1.2)
+      .attr('stroke-opacity', 0.5);
+
+    // Header bar
+    cg.append('rect')
+      .attr('width', cardW)
+      .attr('height', headerH)
+      .attr('rx', 6)
+      .attr('fill', layerColor(dt.layer))
+      .attr('fill-opacity', 0.15);
+    // Clip bottom corners of header
+    cg.append('rect')
+      .attr('y', headerH - 6)
+      .attr('width', cardW)
+      .attr('height', 6)
+      .attr('fill', layerColor(dt.layer))
+      .attr('fill-opacity', 0.15);
+
+    // Type name
+    cg.append('text')
+      .attr('x', cardPadding)
+      .attr('y', 20)
+      .attr('font-size', 13)
+      .attr('font-weight', 700)
+      .attr('fill', layerColor(dt.layer))
+      .text(dt.name);
+
+    // Kind badge
+    const kindColors = {
+      dataclass: '#8b5cf6', pydantic: '#3b82f6', sqlalchemy: '#10b981',
+      typeddict: '#f77f00', namedtuple: '#e879f9',
+    };
+    cg.append('text')
+      .attr('x', cardPadding)
+      .attr('y', headerH + kindBadgeH - 2)
+      .attr('font-size', 9)
+      .attr('fill', kindColors[dt.kind] || 'var(--text3)')
+      .attr('letter-spacing', '0.05em')
+      .text(dt.kind.toUpperCase());
+
+    // Fields
+    const fieldsG = cg.append('g')
+      .attr('class', 'fields-group')
+      .attr('transform', `translate(0,${headerH + kindBadgeH + 4})`);
+
+    dt.fields.forEach((field, fi) => {
+      const fy = fi * fieldH;
+
+      // Alternating row background
+      if (fi % 2 === 0) {
+        fieldsG.append('rect')
+          .attr('x', 2).attr('y', fy)
+          .attr('width', cardW - 4).attr('height', fieldH)
+          .attr('fill', 'rgba(148,163,184,0.03)')
+          .attr('rx', 2);
+      }
+
+      // Field name
+      fieldsG.append('text')
+        .attr('x', cardPadding)
+        .attr('y', fy + 12)
+        .attr('font-size', 10)
+        .attr('fill', field.hasDefault ? 'var(--text3)' : 'var(--text2)')
+        .text(field.name);
+
+      // Field type (right-aligned, truncated)
+      const typeStr = field.type.length > 18 ? field.type.slice(0, 16) + '..' : field.type;
+      fieldsG.append('text')
+        .attr('x', cardW - cardPadding)
+        .attr('y', fy + 12)
+        .attr('text-anchor', 'end')
+        .attr('font-size', 9)
+        .attr('fill', 'var(--text3)')
+        .attr('font-style', 'italic')
+        .text(typeStr);
+    });
+
+    // Hover / click
+    cg.on('mouseenter', (e) => {
+      tooltip.classList.remove('hidden');
+      tooltip.innerHTML = `
+        <div class="tt-title" style="color:${layerColor(dt.layer)}">${dt.name}</div>
+        <div class="tt-row">${dt.kind} · ${dt.fields.length} fields · ${dt.module}</div>
+        <div class="tt-row">Bases: ${dt.bases.join(', ') || 'none'}</div>
+        <div class="tt-row">Methods: ${dt.methods.join(', ') || 'none'}</div>
+      `;
+      tooltip.style.left = (e.clientX + 16) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    })
+    .on('mousemove', e => {
+      tooltip.style.left = (e.clientX + 16) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    })
+    .on('mouseleave', () => tooltip.classList.add('hidden'))
+    .on('click', () => {
+      // Show detail in inspector
+      inspector.innerHTML = `
+        <h3>Data Type</h3>
+        <div class="inspector-title" style="color:${layerColor(dt.layer)}">${dt.name}</div>
+        <div class="inspector-row"><span class="label">Kind</span><span class="value">${dt.kind}</span></div>
+        <div class="inspector-row"><span class="label">Module</span><span class="value">${dt.module}</span></div>
+        <div class="inspector-row"><span class="label">Fields</span><span class="value">${dt.fields.length}</span></div>
+        <div class="inspector-row"><span class="label">Methods</span><span class="value">${dt.methods.length}</span></div>
+        <div class="inspector-row"><span class="label">Bases</span><span class="value">${dt.bases.join(', ') || '-'}</span></div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text3)">Fields:</div>
+        ${dt.fields.map(f => `<div class="inspector-row"><span class="label">${f.name}</span><span class="value" style="font-size:10px">${f.type}</span></div>`).join('')}
+        <div style="margin-top:8px;font-size:11px;color:var(--text3)">Transforms:</div>
+        ${transforms.filter(t => t.sourceType === dt.name || t.targetType === dt.name)
+          .map(t => `<div class="inspector-row"><span class="label" style="font-size:10px">${t.sourceType} → ${t.targetType}</span><span class="value" style="font-size:9px">${t.kind}</span></div>`)
+          .join('') || '<div style="font-size:11px;color:var(--text3)">none</div>'}
+      `;
+
+      // Highlight connected edges
+      const connected = new Set();
+      transforms.forEach(t => {
+        if (t.sourceType === dt.name) connected.add(t.targetType);
+        if (t.targetType === dt.name) connected.add(t.sourceType);
+      });
+      connected.add(dt.name);
+
+      cardG.selectAll('.type-card').style('opacity', function() {
+        const name = d3.select(this).select('text').text();
+        return connected.has(name) ? 1 : 0.2;
+      });
+
+      edgeEls.attr('stroke-opacity', d => {
+        return (d.sourceType === dt.name || d.targetType === dt.name) ? 0.8 : 0.08;
+      }).attr('stroke-width', d => {
+        return (d.sourceType === dt.name || d.targetType === dt.name) ? 2.5 : 0.8;
+      });
+    });
+  });
+
+  // Double-click background to reset
+  svg.on('dblclick.reset', () => {
+    cardG.selectAll('.type-card').style('opacity', 1);
+    edgeEls.attr('stroke-opacity', null).attr('stroke-width', d => d.kind === 'endpoint' ? 2 : 1.2);
+  });
+
+  // Filter controls
+  kinds.forEach(k => {
+    const el = document.getElementById('dtk-' + k);
+    if (el) el.addEventListener('change', applyFilters);
+  });
+  const showFieldsEl = document.getElementById('dtShowFields');
+  const showEdgesEl = document.getElementById('dtShowEdges');
+  if (showFieldsEl) showFieldsEl.addEventListener('change', applyFilters);
+  if (showEdgesEl) showEdgesEl.addEventListener('change', applyFilters);
+
+  function applyFilters() {
+    const activeKinds = new Set(kinds.filter(k => document.getElementById('dtk-' + k)?.checked));
+    const showFields = showFieldsEl?.checked ?? true;
+    const showEdges = showEdgesEl?.checked ?? true;
+
+    cardG.selectAll('.type-card').each(function() {
+      const name = d3.select(this).select('text').text();
+      const dt = typeByName.get(name);
+      const visible = dt && activeKinds.has(dt.kind);
+      d3.select(this).style('display', visible ? null : 'none');
+      d3.select(this).selectAll('.fields-group').style('display', showFields ? null : 'none');
+    });
+    edgeG.style('display', showEdges ? null : 'none');
+  }
 }
 
 /* ── Boot ── */

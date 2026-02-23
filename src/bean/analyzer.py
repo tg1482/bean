@@ -83,6 +83,36 @@ class ModuleInfo:
 
 
 @dataclass
+class DataTypeField:
+    name: str
+    type_annotation: str
+    has_default: bool
+
+
+@dataclass
+class DataTypeInfo:
+    id: str  # module:ClassName
+    name: str
+    module: str
+    kind: str  # "dataclass", "pydantic", "typeddict", "namedtuple", "sqlalchemy", "class"
+    fields: list[DataTypeField]
+    bases: list[str]
+    methods: list[str]
+    lineno: int
+    end_lineno: int
+
+
+@dataclass
+class TypeTransformation:
+    """A function that converts one data type to another."""
+    function_id: str
+    source_type: str  # input type name (from params)
+    target_type: str  # output type name (from return)
+    kind: str  # "function", "method", "endpoint", "constructor"
+    module: str
+
+
+@dataclass
 class AnalysisResult:
     root: str
     is_monorepo: bool = False
@@ -92,6 +122,8 @@ class AnalysisResult:
     import_edges: list[ImportEdge] = field(default_factory=list)
     call_edges: list[CallEdge] = field(default_factory=list)
     entrypoints: list[EntryPoint] = field(default_factory=list)
+    data_types: list[DataTypeInfo] = field(default_factory=list)
+    type_transformations: list[TypeTransformation] = field(default_factory=list)
 
 
 # ── Complexity calculator ────────────────────────────────────────
@@ -135,6 +167,30 @@ def _decorator_names(decorator_list: list[ast.expr]) -> list[str]:
     return names
 
 
+# ── Data type classification ─────────────────────────────────────
+
+
+def _classify_data_type(bases: list[str], decorators: list[str]) -> str | None:
+    """Classify a class as a data type based on its bases and decorators."""
+    dec_str = " ".join(decorators).lower()
+    base_str = " ".join(bases).lower()
+
+    if "dataclass" in dec_str:
+        return "dataclass"
+    if any(b in ("BaseModel", "BaseSettings") or "BaseModel" in b or "BaseSettings" in b for b in bases):
+        return "pydantic"
+    if any("TypedDict" in b for b in bases):
+        return "typeddict"
+    if any("NamedTuple" in b for b in bases):
+        return "namedtuple"
+    if any("Base" == b or "DeclarativeBase" in b for b in bases):
+        return "sqlalchemy"
+    # Check for SQLAlchemy model pattern: has __tablename__
+    if "base" in base_str and ("model" in base_str or "mixin" in base_str):
+        return "sqlalchemy"
+    return None
+
+
 # ── AST visitors ─────────────────────────────────────────────────
 
 
@@ -149,6 +205,7 @@ class _ModuleVisitor(ast.NodeVisitor):
         self.imports: list[ImportEdge] = []
         self.calls: list[CallEdge] = []
         self.entrypoints: list[EntryPoint] = []
+        self.data_types: list[DataTypeInfo] = []
         self._scope_stack: list[str] = []
         self._n_imports = 0
 
@@ -244,8 +301,10 @@ class _ModuleVisitor(ast.NodeVisitor):
             except Exception:
                 bases.append("?")
 
+        decorators = _decorator_names(node.decorator_list)
         methods = []
         fields = set()
+        typed_fields: list[DataTypeField] = []
         for item in ast.walk(node):
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item in node.body:
                 methods.append(item.name)
@@ -256,10 +315,18 @@ class _ModuleVisitor(ast.NodeVisitor):
                             and isinstance(target.value, ast.Name)
                             and target.value.id == "self"):
                         fields.add(target.attr)
-            # Detect class-level annotations (dataclass fields)
+            # Detect class-level annotations (dataclass fields, Pydantic fields)
             if isinstance(item, ast.AnnAssign) and item in node.body:
                 if isinstance(item.target, ast.Name):
-                    fields.add(item.target.id)
+                    fname = item.target.id
+                    ftype = _annotation_str(item.annotation)
+                    has_default = item.value is not None
+                    fields.add(fname)
+                    typed_fields.append(DataTypeField(
+                        name=fname,
+                        type_annotation=ftype,
+                        has_default=has_default,
+                    ))
 
         self.classes.append(ClassInfo(
             id=class_id,
@@ -270,9 +337,24 @@ class _ModuleVisitor(ast.NodeVisitor):
             method_count=len(methods),
             field_count=len(fields),
             bases=bases,
-            decorators=_decorator_names(node.decorator_list),
+            decorators=decorators,
             methods=methods,
         ))
+
+        # Detect data type kind
+        kind = _classify_data_type(bases, decorators)
+        if kind and typed_fields:
+            self.data_types.append(DataTypeInfo(
+                id=class_id,
+                name=node.name,
+                module=self.module_id,
+                kind=kind,
+                fields=typed_fields,
+                bases=bases,
+                methods=methods,
+                lineno=node.lineno,
+                end_lineno=node.end_lineno or node.lineno,
+            ))
 
         self._scope_stack.append(node.name)
         self.generic_visit(node)
@@ -546,6 +628,7 @@ def analyze(root: Path) -> AnalysisResult:
         result.functions.extend(visitor.functions)
         result.classes.extend(visitor.classes)
         result.entrypoints.extend(visitor.entrypoints)
+        result.data_types.extend(visitor.data_types)
 
         # Resolve imports to internal modules
         for imp in visitor.imports:
@@ -581,7 +664,47 @@ def analyze(root: Path) -> AnalysisResult:
                     lineno=call.lineno,
                 ))
 
+    # Extract type transformations from function signatures
+    known_type_names = {dt.name for dt in result.data_types}
+    for f in result.functions:
+        # Extract simple type name from annotations (strip Optional, list, etc.)
+        param_types = set()
+        for ann in f.param_annotations:
+            for tn in known_type_names:
+                if tn in ann:
+                    param_types.add(tn)
+        ret_type = None
+        if f.return_annotation:
+            for tn in known_type_names:
+                if tn in f.return_annotation:
+                    ret_type = tn
+                    break
+
+        if param_types and ret_type:
+            for pt in param_types:
+                if pt != ret_type:
+                    is_ep = any(ep.target == f.id for ep in result.entrypoints)
+                    result.type_transformations.append(TypeTransformation(
+                        function_id=f.id,
+                        source_type=pt,
+                        target_type=ret_type,
+                        kind="endpoint" if is_ep else "function",
+                        module=f.module,
+                    ))
+        # Also detect methods that transform self's class to another type
+        if ret_type and not param_types and f.qualname.count(".") == 1:
+            class_name = f.qualname.split(".")[0]
+            if class_name in known_type_names and class_name != ret_type:
+                result.type_transformations.append(TypeTransformation(
+                    function_id=f.id,
+                    source_type=class_name,
+                    target_type=ret_type,
+                    kind="method",
+                    module=f.module,
+                ))
+
     print(f"  {len(result.functions)} functions, {len(result.classes)} classes")
+    print(f"  {len(result.data_types)} data types, {len(result.type_transformations)} type transformations")
     print(f"  {len(result.import_edges)} import edges, {len(result.call_edges)} call edges")
     print(f"  {len(result.entrypoints)} entrypoints")
 
@@ -906,6 +1029,35 @@ def to_bean_data(result: AnalysisResult) -> dict[str, Any]:
         for c in classes
     ]
 
+    # Data types for Data view
+    data_types_out = []
+    for dt in result.data_types:
+        data_types_out.append({
+            "id": dt.id,
+            "name": dt.name,
+            "module": dt.module,
+            "kind": dt.kind,
+            "layer": mod_layer.get(dt.module, "other"),
+            "fields": [
+                {"name": f.name, "type": f.type_annotation, "hasDefault": f.has_default}
+                for f in dt.fields
+            ],
+            "bases": dt.bases,
+            "methods": dt.methods,
+            "lineno": dt.lineno,
+        })
+
+    type_transforms_out = []
+    for tt in result.type_transformations:
+        type_transforms_out.append({
+            "functionId": tt.function_id,
+            "sourceType": tt.source_type,
+            "targetType": tt.target_type,
+            "kind": tt.kind,
+            "module": tt.module,
+            "layer": mod_layer.get(tt.module, "other"),
+        })
+
     return {
         "galaxyNodes": galaxy_nodes,
         "galaxyEdges": galaxy_edges,
@@ -917,4 +1069,6 @@ def to_bean_data(result: AnalysisResult) -> dict[str, Any]:
         "drillLevels": drill_data,
         "levelOrder": ["layer", "module", "symbol"],
         "classes": classes_enriched,
+        "dataTypes": data_types_out,
+        "typeTransformations": type_transforms_out,
     }
