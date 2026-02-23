@@ -46,7 +46,8 @@ def render_html(data: dict[str, Any], d3_js: str) -> str:
     <div class="header-left">
       <span class="logo">&#9733; Bean</span>
       <nav class="view-tabs" id="viewTabs">
-        <button class="tab active" data-view="data">Data</button>
+        <button class="tab active" data-view="radial">Radial</button>
+        <button class="tab" data-view="data">Data</button>
         <button class="tab" data-view="trace">Trace</button>
         <button class="tab" data-view="quality">Quality</button>
       </nav>
@@ -274,7 +275,7 @@ const LAYER_LABELS = {};
 LAYERS.forEach(l => { LAYER_LABELS[l] = l.charAt(0).toUpperCase() + l.slice(1); });
 
 /* ── State ── */
-let currentView = 'data';
+let currentView = 'radial';
 let particleCtx = null;
 let particles = [];
 let animFrame = null;
@@ -291,7 +292,7 @@ function init() {
   setupTabs();
   setupSearch();
   setupParticles();
-  switchView('data');
+  switchView('radial');
   // Load-in reveal
   document.getElementById('app').style.opacity = '0';
   requestAnimationFrame(() => {
@@ -333,6 +334,7 @@ function switchView(view) {
   addSvgDefs(svg);
 
   switch(view) {
+    case 'radial': renderRadial(); break;
     case 'data': renderDataFlow(); break;
     case 'trace': renderTrace(); break;
     case 'quality': renderQuality(); break;
@@ -455,6 +457,499 @@ function renderLayerLegend() {
       <span class="legend-count">${counts[l]||0}</span>
     </div>`
   ).join('');
+}
+
+/* ══════════════════════════════════════════════════════════
+   VIEW: Radial Architecture Graph
+   ══════════════════════════════════════════════════════════ */
+function renderRadial() {
+  const sidebar = document.getElementById('sidebar');
+  const filters = sidebar.querySelector('#filterControls');
+  const inspector = sidebar.querySelector('#inspector');
+  const tooltip = document.getElementById('tooltip');
+
+  renderLayerLegend();
+
+  filters.innerHTML = `
+    <h3>Display</h3>
+    <div class="filter-toggle"><input type="checkbox" id="radLabels" checked/><label for="radLabels">Labels</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="radEdges" checked/><label for="radEdges">Dependencies</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="radRings" checked/><label for="radRings">Depth rings</label></div>
+    <h3 style="margin-top:8px">Layers</h3>
+    ${LAYERS.map(l => `<div class="filter-toggle"><input type="checkbox" class="layer-filter" data-layer="${l}" checked/><label>${LAYER_LABELS[l]||l}</label></div>`).join('')}
+  `;
+
+  const nodes = D.galaxyNodes;
+  const edges = D.galaxyEdges;
+
+  if (!nodes.length) {
+    inspector.innerHTML = '<h3>Radial</h3><div style="color:var(--text3);font-size:12px">No modules found</div>';
+    return;
+  }
+
+  const epCount = nodes.filter(n => n.isEntryPoint).length;
+  inspector.innerHTML = `
+    <h3>Architecture</h3>
+    <div class="inspector-row"><span class="label">Modules</span><span class="value">${nodes.length}</span></div>
+    <div class="inspector-row"><span class="label">Dependencies</span><span class="value">${edges.length}</span></div>
+    <div class="inspector-row"><span class="label">Entry points</span><span class="value">${epCount}</span></div>
+    <div class="inspector-row"><span class="label">Layers</span><span class="value">${LAYERS.length}</span></div>
+    <div style="margin-top:6px;font-size:11px;color:var(--text3)">Inner ring = core modules. Outer ring = entry points. Hover for details, click to inspect.</div>
+  `;
+
+  const svg = d3.select('#mainSvg');
+  const width = svg.node().clientWidth;
+  const height = svg.node().clientHeight;
+  const g = svg.append('g').attr('class','radial-root');
+
+  const zoomBehavior = d3.zoom().scaleExtent([0.1, 5]).on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoomBehavior);
+
+  const cx = width / 2;
+  const cy = height / 2;
+
+  /* ── Build import graph ── */
+  const nodeById = new Map();
+  nodes.forEach(n => nodeById.set(n.id, n));
+  const nodeIdSet = new Set(nodes.map(n => n.id));
+
+  const importsOf = new Map();
+  edges.forEach(e => {
+    if (!importsOf.has(e.source)) importsOf.set(e.source, new Set());
+    importsOf.get(e.source).add(e.target);
+  });
+
+  /* ── Compute dependency depth ──
+     depth(m) = 0 if m has no internal imports (core)
+     depth(m) = max(depth(dep)) + 1 otherwise
+     Inner ring (0) = core, outer = entry points */
+  const depthOf = new Map();
+  const inProgress = new Set();
+
+  function calcDepth(id) {
+    if (depthOf.has(id)) return depthOf.get(id);
+    if (inProgress.has(id)) return 0;
+    inProgress.add(id);
+    const deps = importsOf.get(id) || new Set();
+    let maxDep = -1;
+    for (const dep of deps) {
+      if (nodeIdSet.has(dep)) maxDep = Math.max(maxDep, calcDepth(dep));
+    }
+    const d = maxDep + 1;
+    depthOf.set(id, d);
+    inProgress.delete(id);
+    return d;
+  }
+  nodes.forEach(n => calcDepth(n.id));
+
+  // Force entry-point modules to the outermost ring
+  const naturalMax = Math.max(0, ...depthOf.values());
+  const epRing = naturalMax + 1;
+  nodes.forEach(n => { if (n.isEntryPoint) depthOf.set(n.id, epRing); });
+
+  const maxDepth = Math.max(0, ...depthOf.values());
+  const displayMax = Math.min(maxDepth, 12);
+
+  /* ── Sector layout: divide circle into layer wedges ── */
+  const layerBuckets = {};
+  LAYERS.forEach(l => { layerBuckets[l] = []; });
+  nodes.forEach(n => {
+    const l = n.layer || 'other';
+    if (!layerBuckets[l]) layerBuckets[l] = [];
+    layerBuckets[l].push(n);
+  });
+  const activeLayers = LAYERS.filter(l => (layerBuckets[l]||[]).length > 0);
+
+  const sectorGap = activeLayers.length > 1 ? 0.06 : 0;
+  const totalGap = sectorGap * activeLayers.length;
+  const availAngle = 2 * Math.PI - totalGap;
+  const totalN = nodes.length;
+
+  const sectors = {};
+  let curAngle = -Math.PI / 2;
+  activeLayers.forEach(l => {
+    const cnt = layerBuckets[l].length;
+    const sweep = (cnt / totalN) * availAngle;
+    sectors[l] = { start: curAngle, end: curAngle + sweep };
+    curAngle += sweep + sectorGap;
+  });
+
+  /* ── Position each node on its ring within its sector ── */
+  const minR = Math.max(40, Math.min(cx, cy) * 0.1);
+  const maxR = Math.min(cx, cy) - 60;
+  const ringStep = displayMax > 0 ? (maxR - minR) / displayMax : 0;
+  const positions = new Map();
+
+  activeLayers.forEach(layer => {
+    const sec = sectors[layer];
+    const mods = layerBuckets[layer];
+    const byDepth = {};
+    mods.forEach(n => {
+      const d = Math.min(depthOf.get(n.id)||0, displayMax);
+      (byDepth[d] = byDepth[d] || []).push(n);
+    });
+
+    Object.entries(byDepth).forEach(([dStr, arr]) => {
+      const d = parseInt(dStr);
+      const r = minR + d * ringStep;
+      arr.sort((a, b) => a.label.localeCompare(b.label));
+      const sweep = sec.end - sec.start;
+      arr.forEach((n, i) => {
+        const t = arr.length > 1 ? (i + 0.5) / arr.length : 0.5;
+        const a = sec.start + t * sweep;
+        positions.set(n.id, { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), angle: a, r, depth: d });
+      });
+    });
+  });
+
+  /* ── Drawing layers ── */
+  const ringsG = g.append('g').attr('class','rad-rings');
+  const sectorG = g.append('g').attr('class','rad-sectors');
+  const edgeG = g.append('g').attr('class','rad-edges');
+  const nodeG = g.append('g').attr('class','rad-nodes');
+  const labelG = g.append('g').attr('class','rad-labels');
+
+  /* Concentric ring guides */
+  for (let d = 0; d <= displayMax; d++) {
+    const r = minR + d * ringStep;
+    ringsG.append('circle')
+      .attr('cx', cx).attr('cy', cy).attr('r', r)
+      .attr('fill','none')
+      .attr('stroke','var(--border)')
+      .attr('stroke-width', d === 0 || d === displayMax ? 0.7 : 0.3)
+      .attr('stroke-dasharray','4 8')
+      .attr('opacity', 0);
+  }
+
+  /* Center label */
+  ringsG.append('text')
+    .attr('x', cx).attr('y', cy + 4)
+    .attr('text-anchor','middle')
+    .attr('font-size', 10).attr('font-weight',700)
+    .attr('fill','var(--text3)')
+    .attr('letter-spacing','0.1em')
+    .attr('opacity', 0)
+    .text('CORE');
+
+  /* Depth ring annotations (right side) */
+  for (let d = 0; d <= displayMax; d++) {
+    const r = minR + d * ringStep;
+    const label = d === 0 ? 'core' : d === displayMax ? 'entry' : '';
+    if (!label) continue;
+    ringsG.append('text')
+      .attr('x', cx + r).attr('y', cy - 8)
+      .attr('text-anchor','middle')
+      .attr('font-size', 8).attr('fill','var(--text3)')
+      .attr('opacity', 0)
+      .text(label);
+  }
+
+  /* Sector backgrounds & labels */
+  activeLayers.forEach(layer => {
+    const sec = sectors[layer];
+    const mid = (sec.start + sec.end) / 2;
+
+    // Background arc (d3.arc uses clockwise from 12 o'clock)
+    const arc = d3.arc()
+      .innerRadius(minR - 8)
+      .outerRadius(maxR + 8)
+      .startAngle(sec.start + Math.PI / 2)
+      .endAngle(sec.end + Math.PI / 2);
+
+    sectorG.append('path')
+      .attr('d', arc())
+      .attr('transform', `translate(${cx},${cy})`)
+      .attr('fill', layerColor(layer))
+      .attr('fill-opacity', 0.025)
+      .attr('stroke','none');
+
+    // Divider line at sector start
+    if (activeLayers.length > 1) {
+      sectorG.append('line')
+        .attr('x1', cx + (minR - 12) * Math.cos(sec.start))
+        .attr('y1', cy + (minR - 12) * Math.sin(sec.start))
+        .attr('x2', cx + (maxR + 12) * Math.cos(sec.start))
+        .attr('y2', cy + (maxR + 12) * Math.sin(sec.start))
+        .attr('stroke', layerColor(layer))
+        .attr('stroke-width', 0.4)
+        .attr('stroke-opacity', 0.25);
+    }
+
+    // Sector label at outer edge
+    const lR = maxR + 32;
+    const lx = cx + lR * Math.cos(mid);
+    const ly = cy + lR * Math.sin(mid);
+    sectorG.append('text')
+      .attr('x', lx).attr('y', ly + 3)
+      .attr('text-anchor','middle')
+      .attr('dominant-baseline','middle')
+      .attr('font-size', 11).attr('font-weight',600)
+      .attr('fill', layerColor(layer))
+      .attr('opacity', 0.8)
+      .text(LAYER_LABELS[layer] || layer);
+  });
+
+  /* ── Edges (bundled toward center) ── */
+  edges.forEach(e => {
+    const sp = positions.get(e.source);
+    const tp = positions.get(e.target);
+    if (!sp || !tp) return;
+
+    const bundle = 0.55;
+    const mx = (sp.x + tp.x) / 2;
+    const my = (sp.y + tp.y) / 2;
+    const qx = mx + (cx - mx) * bundle;
+    const qy = my + (cy - my) * bundle;
+
+    edgeG.append('path')
+      .attr('d', `M${sp.x},${sp.y} Q${qx},${qy} ${tp.x},${tp.y}`)
+      .attr('fill','none')
+      .attr('stroke','rgba(148,163,184,0.08)')
+      .attr('stroke-width', clamp(0.4 + (e.count||1) * 0.25, 0.4, 3))
+      .attr('data-source', e.source)
+      .attr('data-target', e.target)
+      .attr('opacity', 0);
+  });
+
+  /* ── Nodes ── */
+  nodes.forEach(n => {
+    const pos = positions.get(n.id);
+    if (!pos) return;
+    const sz = clamp(2.5 + Math.sqrt(n.symbolCount||1) * 1.8, 3, 14);
+
+    const ng = nodeG.append('g')
+      .attr('transform', `translate(${pos.x},${pos.y})`)
+      .attr('class','rad-node')
+      .attr('data-id', n.id)
+      .attr('data-layer', n.layer)
+      .attr('data-depth', pos.depth)
+      .style('cursor','pointer')
+      .attr('opacity', 0);
+
+    // Ambient glow
+    ng.append('circle').attr('r', sz + 3)
+      .attr('fill', layerColor(n.layer)).attr('fill-opacity', 0.08);
+
+    // Main dot
+    ng.append('circle').attr('r', sz)
+      .attr('fill', `url(#grad-${n.layer})`)
+      .attr('stroke', d3.color(layerColor(n.layer)).brighter(0.5))
+      .attr('stroke-width', n.isEntryPoint ? 1.5 : 0.5);
+
+    // Entry point ring
+    if (n.isEntryPoint) {
+      ng.append('circle').attr('r', sz + 5)
+        .attr('fill','none')
+        .attr('stroke', layerColor(n.layer))
+        .attr('stroke-width', 0.7)
+        .attr('stroke-dasharray','3 3')
+        .attr('opacity', 0.5);
+    }
+
+    // Hotspot ring
+    if (n.isHotspot) {
+      ng.append('circle').attr('r', sz + 2)
+        .attr('fill','none')
+        .attr('stroke','#ef4444')
+        .attr('stroke-width', 0.5)
+        .attr('opacity', 0.5);
+    }
+  });
+
+  /* ── Labels ── */
+  nodes.forEach(n => {
+    const pos = positions.get(n.id);
+    if (!pos) return;
+    const sz = clamp(2.5 + Math.sqrt(n.symbolCount||1) * 1.8, 3, 14);
+    const dx = pos.x - cx;
+    const dy = pos.y - cy;
+    const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+    const nx = dx / dist;
+    const ny = dy / dist;
+    const off = sz + 5;
+    const lx = pos.x + nx * off;
+    const ly = pos.y + ny * off;
+    let anchor = 'start';
+    if (nx < -0.3) anchor = 'end';
+    else if (Math.abs(nx) <= 0.3) anchor = 'middle';
+
+    labelG.append('text')
+      .attr('x', lx).attr('y', ly + 3)
+      .attr('text-anchor', anchor)
+      .attr('font-size', 9)
+      .attr('fill','var(--text3)')
+      .attr('paint-order','stroke')
+      .attr('stroke','var(--bg)')
+      .attr('stroke-width', 2)
+      .attr('stroke-linejoin','round')
+      .attr('pointer-events','none')
+      .attr('data-id', n.id)
+      .attr('data-depth', pos.depth)
+      .attr('opacity', 0)
+      .text(shortLabel(n.label));
+  });
+
+  /* ── Interactions ── */
+  nodeG.selectAll('.rad-node')
+    .on('mouseenter', function(e) {
+      const id = d3.select(this).attr('data-id');
+      const n = nodeById.get(id);
+      if (!n) return;
+      const pos = positions.get(id);
+
+      // Find connected modules
+      const connected = new Set([id]);
+      edges.forEach(ed => {
+        if (ed.source === id) connected.add(ed.target);
+        if (ed.target === id) connected.add(ed.source);
+      });
+
+      // Dim non-connected
+      nodeG.selectAll('.rad-node')
+        .transition().duration(120)
+        .attr('opacity', function() { return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.1; });
+
+      labelG.selectAll('text')
+        .transition().duration(120)
+        .attr('opacity', function() { return connected.has(d3.select(this).attr('data-id')) ? 1 : 0.05; });
+
+      // Highlight connected edges
+      edgeG.selectAll('path')
+        .transition().duration(120)
+        .attr('stroke', function() {
+          const s = d3.select(this).attr('data-source');
+          const t = d3.select(this).attr('data-target');
+          return (s === id || t === id) ? layerColor(n.layer) : 'rgba(148,163,184,0.04)';
+        })
+        .attr('stroke-width', function() {
+          const s = d3.select(this).attr('data-source');
+          const t = d3.select(this).attr('data-target');
+          return (s === id || t === id) ? 2.2 : 0.4;
+        });
+
+      // Tooltip
+      tooltip.classList.remove('hidden');
+      tooltip.innerHTML = `
+        <div class="tt-title" style="color:${layerColor(n.layer)}">${n.label}</div>
+        <div class="tt-row">Layer: ${LAYER_LABELS[n.layer]||n.layer} · Depth: ${pos?.depth??'?'}</div>
+        <div class="tt-row">${n.nFunctions||0} functions · ${n.nClasses||0} classes · Complexity: ${n.complexity}</div>
+        ${n.isEntryPoint ? '<div class="tt-row" style="color:var(--gold)">★ Entry point module</div>' : ''}
+        ${n.isHotspot ? '<div class="tt-row" style="color:#ef4444">● Complexity hotspot</div>' : ''}
+      `;
+      tooltip.style.left = (e.clientX + 16) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    })
+    .on('mousemove', e => {
+      tooltip.style.left = (e.clientX + 16) + 'px';
+      tooltip.style.top = (e.clientY - 10) + 'px';
+    })
+    .on('mouseleave', function() {
+      tooltip.classList.add('hidden');
+      nodeG.selectAll('.rad-node').transition().duration(200).attr('opacity', 1);
+      labelG.selectAll('text').transition().duration(200).attr('opacity', 1);
+      edgeG.selectAll('path').transition().duration(200)
+        .attr('stroke','rgba(148,163,184,0.08)')
+        .attr('stroke-width', function() {
+          const s = d3.select(this).attr('data-source');
+          const t = d3.select(this).attr('data-target');
+          const ed = edges.find(e => e.source === s && e.target === t);
+          return clamp(0.4 + ((ed?.count)||1) * 0.25, 0.4, 3);
+        });
+    })
+    .on('click', function(e) {
+      const id = d3.select(this).attr('data-id');
+      const n = nodeById.get(id);
+      if (!n) return;
+      const pos = positions.get(id);
+      const inDeps = edges.filter(ed => ed.target === id);
+      const outDeps = edges.filter(ed => ed.source === id);
+      inspector.innerHTML = `
+        <h3>Module</h3>
+        <div class="inspector-title" style="color:${layerColor(n.layer)}">${n.label}</div>
+        <div class="inspector-row"><span class="label">Layer</span><span class="value">${LAYER_LABELS[n.layer]||n.layer}</span></div>
+        <div class="inspector-row"><span class="label">Depth</span><span class="value">${pos?.depth??'?'}</span></div>
+        <div class="inspector-row"><span class="label">Functions</span><span class="value">${n.nFunctions||0}</span></div>
+        <div class="inspector-row"><span class="label">Classes</span><span class="value">${n.nClasses||0}</span></div>
+        <div class="inspector-row"><span class="label">Complexity</span><span class="value">${n.complexity||0}</span></div>
+        ${n.isEntryPoint ? '<div class="inspector-row"><span class="label">Entry point</span><span class="value" style="color:var(--gold)">★</span></div>' : ''}
+        ${outDeps.length ? `<div style="margin-top:6px;font-size:11px;color:var(--text3)">Depends on (${outDeps.length}):</div>` +
+          outDeps.slice(0,10).map(ed => { const t = nodeById.get(ed.target); return `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(t?.layer||'other')}">${t?shortLabel(t.label):ed.target}</span><span class="value" style="font-size:9px">${ed.count}</span></div>`; }).join('') : ''}
+        ${inDeps.length ? `<div style="margin-top:6px;font-size:11px;color:var(--text3)">Imported by (${inDeps.length}):</div>` +
+          inDeps.slice(0,10).map(ed => { const s = nodeById.get(ed.source); return `<div class="inspector-row"><span class="label" style="font-size:10px;color:${layerColor(s?.layer||'other')}">${s?shortLabel(s.label):ed.source}</span><span class="value" style="font-size:9px">${ed.count}</span></div>`; }).join('') : ''}
+      `;
+    });
+
+  /* ── Animated reveal: center outward ── */
+  const revealMs = 70;
+
+  // Rings
+  ringsG.selectAll('circle').each(function(d, i) {
+    d3.select(this).transition().delay(i * revealMs).duration(400).attr('opacity', 1);
+  });
+  ringsG.selectAll('text').transition().delay(100).duration(500).attr('opacity', 0.5);
+
+  // Nodes by depth
+  for (let d = 0; d <= displayMax; d++) {
+    const delay = d * revealMs + 80;
+    nodeG.selectAll(`.rad-node[data-depth="${d}"]`)
+      .transition().delay(delay).duration(300).ease(d3.easeBackOut)
+      .attr('opacity', 1);
+    labelG.selectAll(`text[data-depth="${d}"]`)
+      .transition().delay(delay + 50).duration(250)
+      .attr('opacity', 1);
+  }
+
+  // Edges last
+  edgeG.selectAll('path')
+    .transition().delay(displayMax * revealMs + 200).duration(500)
+    .attr('opacity', 1);
+
+  /* ── Auto-fit ── */
+  const pad = 80;
+  const allPos = [...positions.values()];
+  if (allPos.length) {
+    const xs = allPos.map(p => p.x);
+    const ys = allPos.map(p => p.y);
+    const bx = Math.min(...xs) - pad, bX = Math.max(...xs) + pad;
+    const by = Math.min(...ys) - pad, bY = Math.max(...ys) + pad;
+    const bw = bX - bx, bh = bY - by;
+    const s = Math.min(width / bw, height / bh, 1.3);
+    const tx = (width - bw * s) / 2 - bx * s;
+    const ty = (height - bh * s) / 2 - by * s;
+    svg.call(zoomBehavior.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
+  }
+
+  /* ── Filter listeners ── */
+  document.getElementById('radLabels')?.addEventListener('change', function() {
+    labelG.style('display', this.checked ? null : 'none');
+  });
+  document.getElementById('radEdges')?.addEventListener('change', function() {
+    edgeG.style('display', this.checked ? null : 'none');
+  });
+  document.getElementById('radRings')?.addEventListener('change', function() {
+    ringsG.style('display', this.checked ? null : 'none');
+  });
+  filters.querySelectorAll('.layer-filter').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const hidden = new Set();
+      filters.querySelectorAll('.layer-filter').forEach(el => {
+        if (!el.checked) hidden.add(el.dataset.layer);
+      });
+      nodeG.selectAll('.rad-node').style('display', function() {
+        return hidden.has(d3.select(this).attr('data-layer')) ? 'none' : null;
+      });
+      labelG.selectAll('text').style('display', function() {
+        const id = d3.select(this).attr('data-id');
+        const n = nodeById.get(id);
+        return (n && hidden.has(n.layer)) ? 'none' : null;
+      });
+      edgeG.selectAll('path').style('display', function() {
+        const s = nodeById.get(d3.select(this).attr('data-source'));
+        const t = nodeById.get(d3.select(this).attr('data-target'));
+        return (s && hidden.has(s.layer)) || (t && hidden.has(t.layer)) ? 'none' : null;
+      });
+    });
+  });
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1125,13 +1620,13 @@ function renderQuality() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   VIEW 6: Data Flow — types, fields, transformations
+   VIEW 6: Data Flow — module clusters with drill-down
    ══════════════════════════════════════════════════════════ */
 function renderDataFlow() {
   const sidebar = document.getElementById('sidebar');
-  const legend = sidebar.querySelector('#layerLegend');
   const filters = sidebar.querySelector('#filterControls');
   const inspector = sidebar.querySelector('#inspector');
+  const tooltip = document.getElementById('tooltip');
 
   renderLayerLegend();
 
@@ -1144,21 +1639,60 @@ function renderDataFlow() {
     return;
   }
 
-  // Kind filter
+  // Build lookups
+  const typeByName = new Map();
+  dataTypes.forEach(dt => typeByName.set(dt.name, dt));
+
+  // Group types by module
+  const modMap = {};
+  dataTypes.forEach(dt => {
+    const m = dt.module;
+    if (!modMap[m]) modMap[m] = { module: m, layer: dt.layer, types: [], kinds: new Set() };
+    modMap[m].types.push(dt);
+    modMap[m].kinds.add(dt.kind);
+  });
+  const modules = Object.values(modMap);
+  modules.forEach(m => {
+    m.kinds = [...m.kinds].sort();
+    m.types.sort((a, b) => a.name.localeCompare(b.name));
+    m.shortName = m.module.split('.').slice(-2).join('.');
+  });
+
+  // Aggregate module-to-module transform counts
+  const modEdgeMap = {};
+  transforms.forEach(t => {
+    const src = typeByName.get(t.sourceType);
+    const tgt = typeByName.get(t.targetType);
+    if (!src || !tgt) return;
+    const key = src.module + '|' + tgt.module;
+    if (!modEdgeMap[key]) modEdgeMap[key] = { source: src.module, target: tgt.module, count: 0, transforms: [] };
+    modEdgeMap[key].count++;
+    modEdgeMap[key].transforms.push(t);
+  });
+  const modEdges = Object.values(modEdgeMap);
+
+  // Kind colors
+  const kindColors = {
+    dataclass: '#8b5cf6', pydantic: '#3b82f6', sqlalchemy: '#10b981',
+    typeddict: '#f77f00', namedtuple: '#e879f9', class: '#94a3b8',
+  };
+
+  // Filters
   const kinds = [...new Set(dataTypes.map(dt => dt.kind))].sort();
   filters.innerHTML = `
     <h3>Type Kind</h3>
     ${kinds.map(k => `<div class="filter-toggle"><input type="checkbox" id="dtk-${k}" checked/><label for="dtk-${k}">${k}</label></div>`).join('')}
     <h3 style="margin-top:8px">Display</h3>
-    <div class="filter-toggle"><input type="checkbox" id="dtShowFields" checked/><label for="dtShowFields">Show fields</label></div>
-    <div class="filter-toggle"><input type="checkbox" id="dtShowEdges" checked/><label for="dtShowEdges">Show transformations</label></div>
+    <div class="filter-toggle"><input type="checkbox" id="dtShowEdges" checked/><label for="dtShowEdges">Show transforms</label></div>
   `;
 
+  const modCount = modules.length;
   inspector.innerHTML = `
     <h3>Data Types</h3>
+    <div class="inspector-row"><span class="label">Modules</span><span class="value">${modCount}</span></div>
     <div class="inspector-row"><span class="label">Types</span><span class="value">${dataTypes.length}</span></div>
-    <div class="inspector-row"><span class="label">Transformations</span><span class="value">${transforms.length}</span></div>
-    <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click a type to inspect</div>
+    <div class="inspector-row"><span class="label">Transforms</span><span class="value">${transforms.length}</span></div>
+    <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click a module to expand its types. Click a type for detail.</div>
   `;
 
   const svg = d3.select('#mainSvg');
@@ -1166,330 +1700,415 @@ function renderDataFlow() {
   const height = svg.node().clientHeight;
   const g = svg.append('g').attr('class','dataflow-root');
 
-  const zoom = d3.zoom().scaleExtent([0.1, 4]).on('zoom', e => g.attr('transform', e.transform));
+  const zoom = d3.zoom().scaleExtent([0.1, 6]).on('zoom', e => g.attr('transform', e.transform));
   svg.call(zoom);
 
-  // Card dimensions
-  const cardW = 200;
-  const fieldH = 16;
-  const headerH = 32;
-  const kindBadgeH = 14;
-  const cardPadding = 8;
+  // Arrowhead marker
+  const defs = svg.select('defs');
+  defs.append('marker').attr('id','dataArrow')
+    .attr('viewBox','0 -3 6 6').attr('refX',6).attr('refY',0)
+    .attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
+    .append('path').attr('d','M0,-3L6,0L0,3').attr('fill','rgba(148,163,184,0.4)');
+  defs.append('marker').attr('id','dataArrowGold')
+    .attr('viewBox','0 -3 6 6').attr('refX',6).attr('refY',0)
+    .attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
+    .append('path').attr('d','M0,-3L6,0L0,3').attr('fill','var(--gold)');
 
-  function cardHeight(dt) {
-    return headerH + kindBadgeH + dt.fields.length * fieldH + cardPadding * 2;
+  // Layout constants
+  const clusterW = 220;
+  const clusterHeaderH = 28;
+  const typeRowH = 18;
+  const kindPillH = 16;
+  const clusterPad = 6;
+  const colSpacing = clusterW + 80;
+  const rowSpacing = 14;
+  const startX = 40;
+  const startY = 50;
+
+  // Expanded state
+  const expanded = new Set();
+  let selectedType = null;
+
+  // Cluster height based on expanded state
+  function clusterH(mod) {
+    const base = clusterHeaderH + kindPillH + clusterPad;
+    if (!expanded.has(mod.module)) {
+      return base + mod.types.length * typeRowH + clusterPad;
+    }
+    // Expanded: show type cards with fields
+    let h = base;
+    mod.types.forEach(dt => {
+      h += 26 + dt.fields.length * 15 + 10;
+    });
+    return h + clusterPad;
   }
 
-  // Build type name → data type lookup
-  const typeByName = new Map();
-  dataTypes.forEach(dt => typeByName.set(dt.name, dt));
-
-  // Layout: group by layer, arrange in columns
-  const layerGroups = {};
-  dataTypes.forEach(dt => {
-    const l = dt.layer || 'other';
-    (layerGroups[l] = layerGroups[l] || []).push(dt);
+  // Group modules by layer
+  const layerModules = {};
+  modules.forEach(m => {
+    const l = m.layer || 'other';
+    (layerModules[l] = layerModules[l] || []).push(m);
   });
+  Object.values(layerModules).forEach(arr => arr.sort((a, b) => a.module.localeCompare(b.module)));
 
-  const layerOrder = LAYERS.filter(l => layerGroups[l]);
-  // Add any layers not in LAYERS
-  Object.keys(layerGroups).forEach(l => {
-    if (!layerOrder.includes(l)) layerOrder.push(l);
-  });
+  const layerOrder = LAYERS.filter(l => layerModules[l]);
+  Object.keys(layerModules).forEach(l => { if (!layerOrder.includes(l)) layerOrder.push(l); });
 
-  const colSpacing = cardW + 60;
-  const rowSpacing = 20;
-  const startX = 40;
-  const startY = 40;
+  const edgeG = g.append('g').attr('class','mod-edges');
+  const clusterG = g.append('g').attr('class','mod-clusters');
 
-  const positions = new Map(); // dt.id → {x, y, h}
+  function layout() {
+    const positions = new Map(); // module name → {x, y, h}
 
-  layerOrder.forEach((layer, li) => {
-    const types = layerGroups[layer] || [];
-    // Sort by kind then name
-    types.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
-    let y = startY;
-    types.forEach(dt => {
-      const h = cardHeight(dt);
-      positions.set(dt.id, { x: startX + li * colSpacing, y: y, h: h, layer: layer });
-      y += h + rowSpacing;
+    layerOrder.forEach((layer, li) => {
+      const mods = layerModules[layer] || [];
+      let y = startY;
+      mods.forEach(mod => {
+        const h = clusterH(mod);
+        positions.set(mod.module, { x: startX + li * colSpacing, y, h, layer });
+        y += h + rowSpacing;
+      });
     });
-  });
+    return positions;
+  }
 
-  // Auto-fit
-  const maxX = startX + layerOrder.length * colSpacing;
-  const maxY = Math.max(...[...positions.values()].map(p => p.y + p.h), height);
-  const scaleX = width / (maxX + 40);
-  const scaleY = height / (maxY + 40);
-  const autoScale = Math.min(scaleX, scaleY, 1);
-  const tx = Math.max(10, (width - maxX * autoScale) / 2);
-  svg.call(zoom.transform, d3.zoomIdentity.translate(tx, 10).scale(autoScale));
+  function render() {
+    clusterG.selectAll('*').remove();
+    edgeG.selectAll('*').remove();
 
-  // Column headers (layer names)
-  layerOrder.forEach((layer, li) => {
-    g.append('text')
-      .attr('x', startX + li * colSpacing + cardW / 2)
-      .attr('y', startY - 16)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 13)
-      .attr('font-weight', 700)
-      .attr('fill', layerColor(layer))
-      .text(LAYER_LABELS[layer] || layer);
-  });
+    const positions = layout();
 
-  // Draw transformation edges
-  const edgeG = g.append('g').attr('class', 'transform-edges');
-  const edgeData = transforms.filter(t => typeByName.has(t.sourceType) && typeByName.has(t.targetType));
-
-  const edgeEls = edgeG.selectAll('path').data(edgeData).join('path')
-    .attr('d', d => {
-      const src = typeByName.get(d.sourceType);
-      const tgt = typeByName.get(d.targetType);
-      if (!src || !tgt) return '';
-      const sp = positions.get(src.id);
-      const tp = positions.get(tgt.id);
-      if (!sp || !tp) return '';
-      const sx = sp.x + cardW;
-      const sy = sp.y + sp.h / 2;
-      const tx = tp.x;
-      const ty = tp.y + tp.h / 2;
-      // If same column or going backwards, curve more
-      const midX = (sx + tx) / 2;
-      return `M${sx},${sy} C${midX},${sy} ${midX},${ty} ${tx},${ty}`;
-    })
-    .attr('fill', 'none')
-    .attr('stroke', d => {
-      if (d.kind === 'endpoint') return 'var(--gold)';
-      return 'rgba(148,163,184,0.25)';
-    })
-    .attr('stroke-width', d => d.kind === 'endpoint' ? 2 : 1.2)
-    .attr('stroke-dasharray', d => d.kind === 'method' ? '4 3' : null)
-    .attr('marker-end', null);
-
-  // Draw arrowheads
-  const defs = svg.select('defs');
-  const arrowId = 'dataArrow';
-  defs.append('marker')
-    .attr('id', arrowId)
-    .attr('viewBox', '0 -3 6 6')
-    .attr('refX', 6).attr('refY', 0)
-    .attr('markerWidth', 6).attr('markerHeight', 6)
-    .attr('orient', 'auto')
-    .append('path').attr('d', 'M0,-3L6,0L0,3').attr('fill', 'rgba(148,163,184,0.4)');
-
-  edgeEls.attr('marker-end', `url(#${arrowId})`);
-
-  // Edge labels (function name)
-  edgeG.selectAll('text').data(edgeData).join('text')
-    .attr('x', d => {
-      const src = typeByName.get(d.sourceType);
-      const tgt = typeByName.get(d.targetType);
-      if (!src || !tgt) return 0;
-      const sp = positions.get(src.id);
-      const tp = positions.get(tgt.id);
-      if (!sp || !tp) return 0;
-      return (sp.x + cardW + tp.x) / 2;
-    })
-    .attr('y', d => {
-      const src = typeByName.get(d.sourceType);
-      const tgt = typeByName.get(d.targetType);
-      if (!src || !tgt) return 0;
-      const sp = positions.get(src.id);
-      const tp = positions.get(tgt.id);
-      if (!sp || !tp) return 0;
-      return (sp.y + sp.h / 2 + tp.y + tp.h / 2) / 2 - 4;
-    })
-    .attr('text-anchor', 'middle')
-    .attr('font-size', 8)
-    .attr('fill', d => d.kind === 'endpoint' ? 'var(--gold)' : 'var(--text3)')
-    .text(d => {
-      const parts = d.functionId.split(':');
-      const fn = parts[parts.length - 1];
-      return fn.length > 25 ? fn.slice(0, 23) + '..' : fn;
+    // Column headers
+    layerOrder.forEach((layer, li) => {
+      clusterG.append('text')
+        .attr('x', startX + li * colSpacing + clusterW / 2)
+        .attr('y', startY - 18)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', 13).attr('font-weight', 700)
+        .attr('fill', layerColor(layer))
+        .text(LAYER_LABELS[layer] || layer);
     });
 
-  // Draw type cards
-  const cardG = g.append('g').attr('class', 'type-cards');
-  const tooltip = document.getElementById('tooltip');
+    // Draw module-to-module edges
+    const showEdges = document.getElementById('dtShowEdges')?.checked ?? true;
+    if (showEdges) {
+      modEdges.forEach(me => {
+        const sp = positions.get(me.source);
+        const tp = positions.get(me.target);
+        if (!sp || !tp) return;
 
-  dataTypes.forEach(dt => {
-    const pos = positions.get(dt.id);
-    if (!pos) return;
-    const h = cardHeight(dt);
-    const cg = cardG.append('g')
-      .attr('class', 'type-card')
-      .attr('transform', `translate(${pos.x},${pos.y})`);
+        const isSelf = me.source === me.target;
+        const hasEndpoint = me.transforms.some(t => t.kind === 'endpoint');
+        const strokeColor = hasEndpoint ? 'var(--gold)' : 'rgba(148,163,184,0.3)';
+        const strokeW = Math.min(1 + me.count * 0.5, 5);
 
-    // Card background
-    cg.append('rect')
-      .attr('width', cardW)
-      .attr('height', h)
-      .attr('rx', 6)
-      .attr('fill', 'var(--bg2)')
-      .attr('stroke', layerColor(dt.layer))
-      .attr('stroke-width', 1.2)
-      .attr('stroke-opacity', 0.5);
+        if (isSelf) {
+          // Self-loop arc
+          const cx = sp.x + clusterW + 20;
+          const cy = sp.y + sp.h / 2;
+          const r = Math.min(sp.h / 3, 30);
+          edgeG.append('path')
+            .attr('d', `M${sp.x + clusterW},${cy - r/2} A${r},${r} 0 1,1 ${sp.x + clusterW},${cy + r/2}`)
+            .attr('fill', 'none').attr('stroke', strokeColor)
+            .attr('stroke-width', strokeW).attr('stroke-opacity', 0.6)
+            .attr('marker-end', hasEndpoint ? 'url(#dataArrowGold)' : 'url(#dataArrow)')
+            .attr('data-src', me.source).attr('data-tgt', me.target);
+          edgeG.append('text')
+            .attr('x', cx + r + 4).attr('y', cy + 3)
+            .attr('font-size', 9).attr('fill', strokeColor)
+            .text(me.count);
+        } else {
+          const sx = sp.x + clusterW;
+          const sy = sp.y + sp.h / 2;
+          const tx = tp.x;
+          const ty = tp.y + tp.h / 2;
+          const sameCol = Math.abs(sp.x - tp.x) < 10;
+          let d;
+          if (sameCol) {
+            const off = 30;
+            d = `M${sx},${sy} C${sx+off},${sy} ${tx+off},${ty} ${tx + clusterW},${ty}`;
+          } else {
+            const midX = (sx + tx) / 2;
+            d = `M${sx},${sy} C${midX},${sy} ${midX},${ty} ${tx},${ty}`;
+          }
+          edgeG.append('path')
+            .attr('d', d).attr('fill', 'none')
+            .attr('stroke', strokeColor).attr('stroke-width', strokeW)
+            .attr('stroke-opacity', 0.6)
+            .attr('marker-end', hasEndpoint ? 'url(#dataArrowGold)' : 'url(#dataArrow)')
+            .attr('data-src', me.source).attr('data-tgt', me.target);
+          // Count label at midpoint
+          const mx = sameCol ? sx + 30 : (sx + tx) / 2;
+          const my = (sy + ty) / 2 - 5;
+          edgeG.append('text')
+            .attr('x', mx).attr('y', my)
+            .attr('text-anchor', 'middle').attr('font-size', 9)
+            .attr('fill', strokeColor)
+            .text(me.count);
+        }
+      });
+    }
 
-    // Header bar
-    cg.append('rect')
-      .attr('width', cardW)
-      .attr('height', headerH)
-      .attr('rx', 6)
-      .attr('fill', layerColor(dt.layer))
-      .attr('fill-opacity', 0.15);
-    // Clip bottom corners of header
-    cg.append('rect')
-      .attr('y', headerH - 6)
-      .attr('width', cardW)
-      .attr('height', 6)
-      .attr('fill', layerColor(dt.layer))
-      .attr('fill-opacity', 0.15);
+    // Draw module clusters
+    modules.forEach(mod => {
+      const pos = positions.get(mod.module);
+      if (!pos) return;
+      const h = clusterH(mod);
+      const isExpanded = expanded.has(mod.module);
+      const cg = clusterG.append('g')
+        .attr('class', 'mod-cluster')
+        .attr('data-mod', mod.module)
+        .attr('transform', `translate(${pos.x},${pos.y})`);
 
-    // Type name
-    cg.append('text')
-      .attr('x', cardPadding)
-      .attr('y', 20)
-      .attr('font-size', 13)
-      .attr('font-weight', 700)
-      .attr('fill', layerColor(dt.layer))
-      .text(dt.name);
+      // Background
+      cg.append('rect')
+        .attr('width', clusterW).attr('height', h).attr('rx', 8)
+        .attr('fill', 'var(--bg2)')
+        .attr('stroke', layerColor(mod.layer))
+        .attr('stroke-width', isExpanded ? 1.5 : 0.8)
+        .attr('stroke-opacity', isExpanded ? 0.7 : 0.3);
 
-    // Kind badge
-    const kindColors = {
-      dataclass: '#8b5cf6', pydantic: '#3b82f6', sqlalchemy: '#10b981',
-      typeddict: '#f77f00', namedtuple: '#e879f9',
-    };
-    cg.append('text')
-      .attr('x', cardPadding)
-      .attr('y', headerH + kindBadgeH - 2)
-      .attr('font-size', 9)
-      .attr('fill', kindColors[dt.kind] || 'var(--text3)')
-      .attr('letter-spacing', '0.05em')
-      .text(dt.kind.toUpperCase());
+      // Header background
+      cg.append('rect')
+        .attr('width', clusterW).attr('height', clusterHeaderH).attr('rx', 8)
+        .attr('fill', layerColor(mod.layer)).attr('fill-opacity', 0.12);
+      cg.append('rect')
+        .attr('y', clusterHeaderH - 8).attr('width', clusterW).attr('height', 8)
+        .attr('fill', layerColor(mod.layer)).attr('fill-opacity', 0.12);
 
-    // Fields
-    const fieldsG = cg.append('g')
-      .attr('class', 'fields-group')
-      .attr('transform', `translate(0,${headerH + kindBadgeH + 4})`);
+      // Module name
+      cg.append('text')
+        .attr('x', clusterPad + 14).attr('y', 18)
+        .attr('font-size', 11).attr('font-weight', 600)
+        .attr('fill', layerColor(mod.layer))
+        .text(mod.shortName);
 
-    dt.fields.forEach((field, fi) => {
-      const fy = fi * fieldH;
+      // Expand/collapse chevron
+      cg.append('text')
+        .attr('x', clusterPad).attr('y', 18)
+        .attr('font-size', 10).attr('fill', 'var(--text3)')
+        .text(isExpanded ? '▾' : '▸');
 
-      // Alternating row background
-      if (fi % 2 === 0) {
-        fieldsG.append('rect')
-          .attr('x', 2).attr('y', fy)
-          .attr('width', cardW - 4).attr('height', fieldH)
-          .attr('fill', 'rgba(148,163,184,0.03)')
-          .attr('rx', 2);
+      // Type count badge
+      cg.append('text')
+        .attr('x', clusterW - clusterPad).attr('y', 18)
+        .attr('text-anchor', 'end').attr('font-size', 10)
+        .attr('fill', 'var(--text3)')
+        .text(mod.types.length + ' types');
+
+      // Kind pills
+      let pillX = clusterPad;
+      mod.kinds.forEach(k => {
+        const count = mod.types.filter(t => t.kind === k).length;
+        const label = k.slice(0, 3).toUpperCase() + ' ' + count;
+        const tw = label.length * 6 + 8;
+        cg.append('rect')
+          .attr('x', pillX).attr('y', clusterHeaderH + 2)
+          .attr('width', tw).attr('height', kindPillH - 2).attr('rx', 3)
+          .attr('fill', kindColors[k] || '#666').attr('fill-opacity', 0.15);
+        cg.append('text')
+          .attr('x', pillX + tw/2).attr('y', clusterHeaderH + kindPillH - 4)
+          .attr('text-anchor', 'middle').attr('font-size', 8)
+          .attr('fill', kindColors[k] || '#999')
+          .text(label);
+        pillX += tw + 4;
+      });
+
+      const contentY = clusterHeaderH + kindPillH + clusterPad;
+
+      if (!isExpanded) {
+        // Collapsed: show type names as compact list
+        mod.types.forEach((dt, i) => {
+          cg.append('text')
+            .attr('x', clusterPad + 2)
+            .attr('y', contentY + i * typeRowH + 13)
+            .attr('font-size', 10)
+            .attr('fill', selectedType === dt.name ? layerColor(mod.layer) : 'var(--text2)')
+            .attr('font-weight', selectedType === dt.name ? 600 : 400)
+            .attr('class', 'type-name-row')
+            .attr('data-name', dt.name)
+            .text(dt.name)
+            .style('cursor', 'pointer');
+
+          // Field count on right
+          cg.append('text')
+            .attr('x', clusterW - clusterPad)
+            .attr('y', contentY + i * typeRowH + 13)
+            .attr('text-anchor', 'end').attr('font-size', 9)
+            .attr('fill', 'var(--text3)')
+            .text(dt.fields.length + 'f');
+        });
+      } else {
+        // Expanded: show type cards with fields
+        let yOff = contentY;
+        mod.types.forEach(dt => {
+          const isSelected = selectedType === dt.name;
+
+          // Type header
+          cg.append('rect')
+            .attr('x', 4).attr('y', yOff)
+            .attr('width', clusterW - 8).attr('height', 22).attr('rx', 4)
+            .attr('fill', isSelected ? layerColor(mod.layer) : 'rgba(148,163,184,0.06)')
+            .attr('fill-opacity', isSelected ? 0.2 : 1);
+
+          cg.append('text')
+            .attr('x', clusterPad + 2).attr('y', yOff + 15)
+            .attr('font-size', 11).attr('font-weight', 600)
+            .attr('fill', isSelected ? layerColor(mod.layer) : 'var(--text1)')
+            .attr('class', 'type-name-row')
+            .attr('data-name', dt.name)
+            .text(dt.name)
+            .style('cursor', 'pointer');
+
+          // Kind badge
+          cg.append('text')
+            .attr('x', clusterW - clusterPad - 2).attr('y', yOff + 14)
+            .attr('text-anchor', 'end').attr('font-size', 8)
+            .attr('fill', kindColors[dt.kind] || 'var(--text3)')
+            .text(dt.kind);
+
+          yOff += 24;
+
+          // Fields
+          dt.fields.forEach((f, fi) => {
+            if (fi % 2 === 0) {
+              cg.append('rect')
+                .attr('x', 6).attr('y', yOff)
+                .attr('width', clusterW - 12).attr('height', 15).attr('rx', 2)
+                .attr('fill', 'rgba(148,163,184,0.03)');
+            }
+            cg.append('text')
+              .attr('x', clusterPad + 6).attr('y', yOff + 11)
+              .attr('font-size', 9.5)
+              .attr('fill', f.hasDefault ? 'var(--text3)' : 'var(--text2)')
+              .text(f.name);
+            const ts = f.type.length > 16 ? f.type.slice(0,14)+'..' : f.type;
+            cg.append('text')
+              .attr('x', clusterW - clusterPad - 2).attr('y', yOff + 11)
+              .attr('text-anchor', 'end').attr('font-size', 8.5)
+              .attr('fill', 'var(--text3)').attr('font-style', 'italic')
+              .text(ts);
+            yOff += 15;
+          });
+          yOff += 10;
+        });
       }
 
-      // Field name
-      fieldsG.append('text')
-        .attr('x', cardPadding)
-        .attr('y', fy + 12)
-        .attr('font-size', 10)
-        .attr('fill', field.hasDefault ? 'var(--text3)' : 'var(--text2)')
-        .text(field.name);
+      // Click header to expand/collapse
+      cg.on('click', (e) => {
+        // Check if they clicked a type name row
+        const target = d3.select(e.target);
+        if (target.classed('type-name-row')) {
+          const name = target.attr('data-name');
+          selectType(name);
+          e.stopPropagation();
+          return;
+        }
+        // Toggle expand
+        if (expanded.has(mod.module)) expanded.delete(mod.module);
+        else expanded.add(mod.module);
+        render();
+      });
 
-      // Field type (right-aligned, truncated)
-      const typeStr = field.type.length > 18 ? field.type.slice(0, 16) + '..' : field.type;
-      fieldsG.append('text')
-        .attr('x', cardW - cardPadding)
-        .attr('y', fy + 12)
-        .attr('text-anchor', 'end')
-        .attr('font-size', 9)
-        .attr('fill', 'var(--text3)')
-        .attr('font-style', 'italic')
-        .text(typeStr);
+      // Hover tooltip
+      cg.on('mouseenter', (e) => {
+        tooltip.classList.remove('hidden');
+        tooltip.innerHTML = `
+          <div class="tt-title" style="color:${layerColor(mod.layer)}">${mod.module}</div>
+          <div class="tt-row">${mod.types.length} types · ${mod.kinds.join(', ')}</div>
+          <div class="tt-row">Click to ${isExpanded ? 'collapse' : 'expand fields'}</div>
+        `;
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mousemove', e => {
+        tooltip.style.left = (e.clientX + 16) + 'px';
+        tooltip.style.top = (e.clientY - 10) + 'px';
+      })
+      .on('mouseleave', () => tooltip.classList.add('hidden'));
     });
 
-    // Hover / click
-    cg.on('mouseenter', (e) => {
-      tooltip.classList.remove('hidden');
-      tooltip.innerHTML = `
-        <div class="tt-title" style="color:${layerColor(dt.layer)}">${dt.name}</div>
-        <div class="tt-row">${dt.kind} · ${dt.fields.length} fields · ${dt.module}</div>
-        <div class="tt-row">Bases: ${dt.bases.join(', ') || 'none'}</div>
-        <div class="tt-row">Methods: ${dt.methods.join(', ') || 'none'}</div>
-      `;
-      tooltip.style.left = (e.clientX + 16) + 'px';
-      tooltip.style.top = (e.clientY - 10) + 'px';
-    })
-    .on('mousemove', e => {
-      tooltip.style.left = (e.clientX + 16) + 'px';
-      tooltip.style.top = (e.clientY - 10) + 'px';
-    })
-    .on('mouseleave', () => tooltip.classList.add('hidden'))
-    .on('click', () => {
-      // Show detail in inspector
-      inspector.innerHTML = `
-        <h3>Data Type</h3>
-        <div class="inspector-title" style="color:${layerColor(dt.layer)}">${dt.name}</div>
-        <div class="inspector-row"><span class="label">Kind</span><span class="value">${dt.kind}</span></div>
-        <div class="inspector-row"><span class="label">Module</span><span class="value">${dt.module}</span></div>
-        <div class="inspector-row"><span class="label">Fields</span><span class="value">${dt.fields.length}</span></div>
-        <div class="inspector-row"><span class="label">Methods</span><span class="value">${dt.methods.length}</span></div>
-        <div class="inspector-row"><span class="label">Bases</span><span class="value">${dt.bases.join(', ') || '-'}</span></div>
-        <div style="margin-top:8px;font-size:11px;color:var(--text3)">Fields:</div>
-        ${dt.fields.map(f => `<div class="inspector-row"><span class="label">${f.name}</span><span class="value" style="font-size:10px">${f.type}</span></div>`).join('')}
-        <div style="margin-top:8px;font-size:11px;color:var(--text3)">Transforms:</div>
-        ${transforms.filter(t => t.sourceType === dt.name || t.targetType === dt.name)
-          .map(t => `<div class="inspector-row"><span class="label" style="font-size:10px">${t.sourceType} → ${t.targetType}</span><span class="value" style="font-size:9px">${t.kind}</span></div>`)
-          .join('') || '<div style="font-size:11px;color:var(--text3)">none</div>'}
-      `;
+    // Auto-fit
+    const allPos = [...layout().values()];
+    if (allPos.length) {
+      const maxX = Math.max(...allPos.map(p => p.x)) + clusterW + 40;
+      const maxY = Math.max(...allPos.map(p => p.y + p.h)) + 40;
+      const scaleX = width / maxX;
+      const scaleY = height / maxY;
+      const s = Math.min(scaleX, scaleY, 1);
+      const tx = Math.max(10, (width - maxX * s) / 2);
+      svg.call(zoom.transform, d3.zoomIdentity.translate(tx, 10).scale(s));
+    }
+  }
 
-      // Highlight connected edges
-      const connected = new Set();
-      transforms.forEach(t => {
-        if (t.sourceType === dt.name) connected.add(t.targetType);
-        if (t.targetType === dt.name) connected.add(t.sourceType);
-      });
-      connected.add(dt.name);
+  function selectType(name) {
+    selectedType = name;
+    const dt = typeByName.get(name);
+    if (!dt) return;
 
-      cardG.selectAll('.type-card').style('opacity', function() {
-        const name = d3.select(this).select('text').text();
-        return connected.has(name) ? 1 : 0.2;
-      });
+    // Inspector detail
+    const related = transforms.filter(t => t.sourceType === name || t.targetType === name);
+    inspector.innerHTML = `
+      <h3>Type Detail</h3>
+      <div class="inspector-title" style="color:${layerColor(dt.layer)}">${dt.name}</div>
+      <div class="inspector-row"><span class="label">Kind</span><span class="value">${dt.kind}</span></div>
+      <div class="inspector-row"><span class="label">Module</span><span class="value" style="font-size:10px">${dt.module}</span></div>
+      <div class="inspector-row"><span class="label">Fields</span><span class="value">${dt.fields.length}</span></div>
+      <div class="inspector-row"><span class="label">Bases</span><span class="value">${dt.bases.join(', ') || '-'}</span></div>
+      ${dt.fields.length ? '<div style="margin-top:6px;font-size:11px;color:var(--text3)">Fields:</div>' : ''}
+      ${dt.fields.map(f => `<div class="inspector-row"><span class="label">${f.name}</span><span class="value" style="font-size:10px">${f.type}</span></div>`).join('')}
+      ${related.length ? '<div style="margin-top:6px;font-size:11px;color:var(--text3)">Transforms:</div>' : ''}
+      ${related.map(t => {
+        const fn = t.functionId.split(':').pop();
+        return `<div class="inspector-row"><span class="label" style="font-size:10px">${t.sourceType} → ${t.targetType}</span><span class="value" style="font-size:9px">${fn}</span></div>`;
+      }).join('')}
+    `;
 
-      edgeEls.attr('stroke-opacity', d => {
-        return (d.sourceType === dt.name || d.targetType === dt.name) ? 0.8 : 0.08;
-      }).attr('stroke-width', d => {
-        return (d.sourceType === dt.name || d.targetType === dt.name) ? 2.5 : 0.8;
-      });
+    // Highlight connected modules
+    const connectedMods = new Set([dt.module]);
+    related.forEach(t => {
+      const src = typeByName.get(t.sourceType);
+      const tgt = typeByName.get(t.targetType);
+      if (src) connectedMods.add(src.module);
+      if (tgt) connectedMods.add(tgt.module);
     });
-  });
 
-  // Double-click background to reset
+    clusterG.selectAll('.mod-cluster').style('opacity', function() {
+      return connectedMods.has(d3.select(this).attr('data-mod')) ? 1 : 0.2;
+    });
+    edgeG.selectAll('path').attr('stroke-opacity', function() {
+      const s = d3.select(this).attr('data-src');
+      const t = d3.select(this).attr('data-tgt');
+      return (connectedMods.has(s) && connectedMods.has(t)) ? 0.8 : 0.05;
+    });
+
+    render();
+  }
+
+  // Double-click to reset selection
   svg.on('dblclick.reset', () => {
-    cardG.selectAll('.type-card').style('opacity', 1);
-    edgeEls.attr('stroke-opacity', null).attr('stroke-width', d => d.kind === 'endpoint' ? 2 : 1.2);
+    selectedType = null;
+    clusterG.selectAll('.mod-cluster').style('opacity', 1);
+    edgeG.selectAll('path').attr('stroke-opacity', 0.6);
+    inspector.innerHTML = `
+      <h3>Data Types</h3>
+      <div class="inspector-row"><span class="label">Modules</span><span class="value">${modCount}</span></div>
+      <div class="inspector-row"><span class="label">Types</span><span class="value">${dataTypes.length}</span></div>
+      <div class="inspector-row"><span class="label">Transforms</span><span class="value">${transforms.length}</span></div>
+      <div style="margin-top:6px;font-size:11px;color:var(--text3)">Click a module to expand its types. Click a type for detail.</div>
+    `;
+    render();
   });
 
-  // Filter controls
+  // Filter listeners
   kinds.forEach(k => {
     const el = document.getElementById('dtk-' + k);
-    if (el) el.addEventListener('change', applyFilters);
+    if (el) el.addEventListener('change', render);
   });
-  const showFieldsEl = document.getElementById('dtShowFields');
   const showEdgesEl = document.getElementById('dtShowEdges');
-  if (showFieldsEl) showFieldsEl.addEventListener('change', applyFilters);
-  if (showEdgesEl) showEdgesEl.addEventListener('change', applyFilters);
+  if (showEdgesEl) showEdgesEl.addEventListener('change', render);
 
-  function applyFilters() {
-    const activeKinds = new Set(kinds.filter(k => document.getElementById('dtk-' + k)?.checked));
-    const showFields = showFieldsEl?.checked ?? true;
-    const showEdges = showEdgesEl?.checked ?? true;
-
-    cardG.selectAll('.type-card').each(function() {
-      const name = d3.select(this).select('text').text();
-      const dt = typeByName.get(name);
-      const visible = dt && activeKinds.has(dt.kind);
-      d3.select(this).style('display', visible ? null : 'none');
-      d3.select(this).selectAll('.fields-group').style('display', showFields ? null : 'none');
-    });
-    edgeG.style('display', showEdges ? null : 'none');
-  }
+  render();
 }
 
 /* ── Boot ── */
