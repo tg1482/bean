@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+  </defs>
+  <!-- Left barrel -->
+  <circle cx="38" cy="68" r="28" fill="none" stroke="url(#g1)" stroke-width="5"/>
+  <circle cx="38" cy="68" r="18" fill="none" stroke="url(#g2)" stroke-width="2" opacity="0.5"/>
+  <circle cx="38" cy="68" r="8" fill="url(#g2)" opacity="0.3"/>
+  <!-- Right barrel -->
+  <circle cx="82" cy="68" r="28" fill="none" stroke="url(#g1)" stroke-width="5"/>
+  <circle cx="82" cy="68" r="18" fill="none" stroke="url(#g2)" stroke-width="2" opacity="0.5"/>
+  <circle cx="82" cy="68" r="8" fill="url(#g2)" opacity="0.3"/>
+  <!-- Bridge -->
+  <path d="M55 58 C58 48, 62 48, 65 58" fill="none" stroke="url(#g1)" stroke-width="4" stroke-linecap="round"/>
+  <!-- Eyepieces -->
+  <line x1="22" y1="42" x2="18" y2="28" stroke="url(#g1)" stroke-width="4" stroke-linecap="round"/>
+  <line x1="98" y1="42" x2="102" y2="28" stroke="url(#g1)" stroke-width="4" stroke-linecap="round"/>
+  <!-- Lens glint -->
+  <circle cx="32" cy="62" r="4" fill="#fde68a" opacity="0.6"/>
+  <circle cx="76" cy="62" r="4" fill="#fde68a" opacity="0.6"/>
+</svg>

@@ -44,7 +44,7 @@ def render_html(data: dict[str, Any], d3_js: str) -> str:
 <div id="app">
   <header id="header">
     <div class="header-left">
-      <span class="logo">&#9733; Bean</span>
+      <span class="logo"><svg class="logo-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="14" r="5"/><circle cx="16.5" cy="14" r="5"/><path d="M12.5 12.5c-.3-1.2-.3-2.5 0-3.5M11.5 12.5c.3-1.2.3-2.5 0-3.5"/><path d="M5 8.5L4 5M19 8.5L20 5"/></svg> Bean</span>
       <nav class="view-tabs" id="viewTabs">
         <button class="tab active" data-view="radial">Radial</button>
         <button class="tab" data-view="data">Data</button>
@@ -104,7 +104,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
   flex-shrink:0;z-index:100}
 .header-left{display:flex;align-items:center;gap:16px}
 .header-right{display:flex;align-items:center;gap:12px}
-.logo{font-size:18px;font-weight:700;color:var(--gold);letter-spacing:-0.5px}
+.logo{font-size:18px;font-weight:700;color:var(--gold);letter-spacing:-0.5px;display:flex;align-items:center;gap:6px}
+.logo-icon{color:var(--gold);flex-shrink:0}
 .view-tabs{display:flex;gap:2px}
 .tab{background:transparent;border:1px solid transparent;color:var(--text2);
   padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;
